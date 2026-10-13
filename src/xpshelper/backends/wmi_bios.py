@@ -10,23 +10,19 @@ which the OS surfaces as:
     write      BIOSAttributeInterface -> SetAttribute(AttributeName, AttributeValue, ...)
 
 Crucially this comes from the **firmware**, not from an installed agent -- Dell's
-own whitepaper for it is titled "Agentless Client Manageability". That means the
-thermal profile and battery charge limit can be changed without downloading Dell
-Power Manager, Dell Command | Configure, or Dell Command | Monitor.
+own whitepaper for it is titled "Agentless Client Manageability".
 
-How this was established
------------------------
-The interface is the same one the Linux kernel drives through ``dell-wmi-sysman``
-(WMI GUIDs ``F1DDEE52-063C-4784-A11E-8A06684B9BF4`` for the attribute interface
-and ``...9BF5`` / ``...9BFA`` / ``...9BF9`` for the enumeration/integer/string
-classes). The Windows-side namespace, class and method names, the security-handle
-arguments for a BIOS password, and the status-code table were taken from
-Dell-authored PowerShell written against this interface (see CREDITS.md).
-
-Note on the attribute *values*: they are the same BIOS attributes cctk uses, so
-the tokens are identical (``UltraPerformance``, ``PrimAcUse``, ``Custom:60-80``).
-That is why the token tables in :mod:`xpshelper.model` are shared by both
-backends.
+Two providers, and why both are tried
+-------------------------------------
+WMI exposes the same class through two different stacks: the modern CIM/WSMan
+provider (``Get-CimInstance``) and the legacy DCOM provider (``Get-WmiObject``).
+They are not interchangeable: **some firmware ACPI-WMI classes are reachable only
+over one of them.** Dell's own sample scripts query this exact namespace with
+``Get-WmiObject``, while community forks use ``Get-CimInstance`` -- evidence that
+which one works depends on the machine. Querying only CIM therefore produced a
+false "your BIOS does not have this interface" on machines where it does, so
+every read and write here tries CIM first and falls back to DCOM, recording the
+error from each.
 
 Security note
 -------------
@@ -42,14 +38,12 @@ import json
 import logging
 import subprocess
 import sys
-from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .. import constants as C
 from ..errors import (
     AttributeNotSupported,
     BackendUnavailableError,
-    BiosPasswordInvalid,
     BiosPasswordRequired,
     CctkError,
 )
@@ -61,10 +55,11 @@ from ..model import (
     parse_charge_mode_list,
     parse_profile_list,
 )
+from ..procutil import hidden_process_kwargs, powershell_argv
 
 log = logging.getLogger(__name__)
 
-#: Attributes this app cares about, in preference order per feature.
+#: Attributes this app cares about, per feature.
 THERMAL_ATTRIBUTE_CANDIDATES = ("ThermalManagement",)
 CHARGE_ATTRIBUTE_CANDIDATES = ("PrimaryBattChargeCfg", "PrimaryBatteryChargeCfg")
 ADV_CHARGE_ATTRIBUTE = "AdvBatteryChargeCfg"
@@ -77,68 +72,125 @@ $ns = 'root\dcim\sysman\biosattributes'
 $wanted = @($payload.attributes)
 
 $out = [ordered]@{
-  interface_found = $false
+  interface_found    = $false
+  api                = $null
   admin_password_set = $null
-  attributes = @()
-  error = $null
+  attributes         = @()
+  errors             = @()
 }
 
-try {
-  # Presence of this class is what tells us the BIOS exposes WMI-ACPI attributes.
-  $null = Get-CimInstance -Namespace $ns -ClassName 'BIOSAttributeInterface' -ErrorAction Stop
-  $out.interface_found = $true
-} catch {
-  $out.error = $_.Exception.Message
+# The interface class. CIM first, then the legacy DCOM provider: some Dell
+# ACPI-WMI classes are not reachable over WSMan/CIM and Dell's own scripts use
+# Get-WmiObject for this namespace.
+$iface = $null
+foreach ($api in @('cim', 'wmi')) {
+  try {
+    if ($api -eq 'cim') {
+      $iface = Get-CimInstance -Namespace $ns -ClassName 'BIOSAttributeInterface' -ErrorAction Stop
+    } else {
+      $iface = Get-WmiObject -Namespace $ns -Class 'BIOSAttributeInterface' -ErrorAction Stop
+    }
+    $out.api = $api
+    break
+  } catch {
+    $out.errors += "${api}:BIOSAttributeInterface: $($_.Exception.Message)"
+  }
 }
+if ($null -ne $iface) { $out.interface_found = $true }
 
 if ($out.interface_found) {
   foreach ($class in $payload.classes) {
-    try {
-      $items = Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction Stop |
-        Where-Object { $wanted -contains $_.AttributeName } |
-        Select-Object AttributeName, CurrentValue, PossibleValues, @{n='AttributeClass';e={$class}}
-      if ($items) { $out.attributes += @($items) }
-    } catch { }
+    foreach ($api in @('cim', 'wmi')) {
+      try {
+        if ($api -eq 'cim') {
+          $items = Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction Stop
+        } else {
+          $items = Get-WmiObject -Namespace $ns -Class $class -ErrorAction Stop
+        }
+      } catch {
+        $out.errors += "${api}:${class}: $($_.Exception.Message)"
+        continue
+      }
+      $matched = @(
+        $items |
+          Where-Object { $wanted -contains $_.AttributeName } |
+          Select-Object AttributeName, CurrentValue, PossibleValues, @{n='AttributeClass';e={$class}}
+      )
+      if ($matched.Count -gt 0) {
+        $out.attributes += $matched
+        break
+      }
+    }
   }
 
   try {
     $pw = Get-CimInstance -Namespace 'root\dcim\sysman\wmisecurity' `
             -ClassName 'PasswordObject' -Filter "NameId='Admin'" -ErrorAction Stop
     if ($pw) { $out.admin_password_set = [bool]$pw.IsPasswordSet }
-  } catch { }
+  } catch {
+    $out.errors += "wmisecurity: $($_.Exception.Message)"
+  }
 }
 
 $out | ConvertTo-Json -Compress -Depth 5
 """
 
 WRITE_SCRIPT = r"""
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'SilentlyContinue'
 $ns = 'root\dcim\sysman\biosattributes'
-$out = [ordered]@{ status = $null; error = $null }
-try {
-  $iface = Get-CimInstance -Namespace $ns -ClassName 'BIOSAttributeInterface' -ErrorAction Stop
+$out = [ordered]@{ status = $null; api = $null; error = $null }
 
-  $arguments = @{
-    AttributeName  = $payload.attribute
-    AttributeValue = $payload.value
+$iface = $null
+foreach ($api in @('cim', 'wmi')) {
+  try {
+    if ($api -eq 'cim') {
+      $iface = Get-CimInstance -Namespace $ns -ClassName 'BIOSAttributeInterface' -ErrorAction Stop
+    } else {
+      $iface = Get-WmiObject -Namespace $ns -Class 'BIOSAttributeInterface' -ErrorAction Stop
+    }
+    $out.api = $api
+    break
+  } catch {
+    $out.error = "${api}: $($_.Exception.Message)"
   }
-  if ($payload.password) {
-    $bytes = [Text.Encoding]::UTF8.GetBytes($payload.password)
-    $arguments.SecType     = 1
-    $arguments.SecHndCount = $bytes.Length
-    $arguments.SecHandle   = $bytes
-  }
-
-  $result = Invoke-CimMethod -InputObject $iface -MethodName 'SetAttribute' `
-              -Arguments $arguments -ErrorAction Stop
-  $out.status = [int]$result.Status
-} catch {
-  $out.error = $_.Exception.Message
 }
+
+if ($null -ne $iface) {
+  $name = $payload.attribute
+  $value = $payload.value
+  $password = $payload.password
+
+  try {
+    if ($out.api -eq 'cim') {
+      $arguments = @{ AttributeName = $name; AttributeValue = $value }
+      if ($password) {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($password)
+        $arguments.SecType     = 1
+        $arguments.SecHndCount = $bytes.Length
+        $arguments.SecHandle   = $bytes
+      }
+      $result = Invoke-CimMethod -InputObject $iface -MethodName 'SetAttribute' `
+                  -Arguments $arguments -ErrorAction Stop
+    } else {
+      # Invoke-WmiMethod is positional, in the order the method declares its
+      # parameters: AttributeName, AttributeValue, SecType, SecHndCount, SecHandle.
+      if ($password) {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($password)
+        $result = Invoke-WmiMethod -InputObject $iface -Name 'SetAttribute' `
+                    -ArgumentList @($name, $value, 1, $bytes.Length, $bytes) -ErrorAction Stop
+      } else {
+        $result = Invoke-WmiMethod -InputObject $iface -Name 'SetAttribute' `
+                    -ArgumentList @($name, $value) -ErrorAction Stop
+      }
+    }
+    $out.status = [int]$result.Status
+  } catch {
+    $out.error = $_.Exception.Message
+  }
+}
+
 $out | ConvertTo-Json -Compress
 """
-
-RESULT_MARKER = "@@XPSHELPER@@"
 
 #: Inject the payload safely: JSON -> base64 -> decoded inside PowerShell.
 _PAYLOAD_PREAMBLE = (
@@ -150,22 +202,19 @@ Runner = Callable[[str, int], tuple[int, str, str]]
 
 
 def default_powershell_runner(script: str, timeout: int) -> tuple[int, str, str]:
-    """Run a PowerShell script, returning (returncode, stdout, stderr)."""
+    """Run a PowerShell script with no console window, returning (rc, out, err).
+
+    ``hidden_process_kwargs`` matters here: the GUI is built without a console, so
+    without it Windows flashes a black console window on every sensor refresh.
+    """
     try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv prefix, no shell
-            [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-Command",
-                script,
-            ],
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            powershell_argv(script),
             capture_output=True,
             text=True,
             timeout=timeout,
             errors="replace",
+            **hidden_process_kwargs(),
         )
     except FileNotFoundError as exc:
         raise BackendUnavailableError(
@@ -220,6 +269,17 @@ def normalise_attribute_list(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def _as_error_list(value: Any) -> list[str]:
+    """Normalise a PowerShell string-or-array field into a list of strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
 
 
 def possible_values(entry: dict[str, Any]) -> list[str]:
@@ -367,10 +427,17 @@ class WmiBiosBackend:
         )
         self._cache = data
         if not data.get("interface_found"):
-            self.last_error = data.get("error") or (
-                "The BIOS did not expose the WMI-ACPI BIOS attribute interface. "
-                "This machine may not support it."
+            # PowerShell emits a bare string instead of a one-element array, so
+            # normalise before joining.
+            raw_errors = data.get("errors")
+            if isinstance(raw_errors, str):
+                raw_errors = [raw_errors]
+            errors = [str(e) for e in (raw_errors or []) if str(e).strip()]
+            self.last_error = " | ".join(errors[:3]) or (
+                "The BIOS did not expose the WMI-ACPI BIOS attribute interface."
             )
+        else:
+            self.last_error = None
         return data
 
     def _snapshot(self, *, use_cache: bool = True) -> dict[str, Any]:
@@ -389,27 +456,33 @@ class WmiBiosBackend:
         if not self.available:
             caps.notes.append("Native BIOS interface is only available on Windows.")
             return caps
+
         if not data.get("interface_found"):
             caps.notes.append(
-                "The BIOS did not expose BIOSAttributeInterface. Either this model "
-                "predates WMI-ACPI support, or the interface is disabled. Run "
-                "'xps-helper doctor' for details."
+                "The BIOS did not expose BIOSAttributeInterface in "
+                f"{C.WMI_BIOS_NAMESPACE} through either the CIM or the legacy WMI "
+                "provider. Run 'xps-helper diagnose-wmi' for a full report."
             )
-            if data.get("error"):
-                caps.notes.append(f"BIOS said: {data['error']}")
+            for error in _as_error_list(data.get("errors"))[:4]:
+                caps.notes.append(f"BIOS said: {error}")
+            if not data.get("errors"):
+                caps.notes.append(
+                    "No error was returned either, which usually means the namespace "
+                    "does not exist on this model."
+                )
             return caps
 
+        api = data.get("api") or "unknown"
         entries = self._entries(use_cache=use_cache)
         found_names = sorted(
             {str(e.get("AttributeName")) for e in entries if e.get("AttributeName")}
         )
         caps.notes.append(
-            f"Native BIOS attributes available: {', '.join(found_names) or 'none of the expected ones'}"
+            f"Native BIOS attributes available via the {api.upper()} provider: "
+            f"{', '.join(found_names) or 'none of the expected ones'}"
         )
         if data.get("admin_password_set"):
-            caps.notes.append(
-                "A BIOS administrator password is set; writes need it."
-            )
+            caps.notes.append("A BIOS administrator password is set; writes need it.")
 
         thermal = find_attribute(entries, THERMAL_ATTRIBUTE_CANDIDATES)
         if thermal is not None:
@@ -449,6 +522,10 @@ class WmiBiosBackend:
     def password_is_set(self) -> bool | None:
         return self._snapshot().get("admin_password_set")
 
+    def active_provider(self) -> str | None:
+        """'cim' or 'wmi' -- which provider the firmware answered on."""
+        return self._snapshot().get("api")
+
     # -- writes -----------------------------------------------------------
     def _set_attribute(self, attribute: str, value: str) -> None:
         data = self._run(
@@ -474,8 +551,6 @@ class WmiBiosBackend:
 
     def set_charge_config(self, config: ChargeConfig) -> None:
         entry = find_attribute(self._entries(), CHARGE_ATTRIBUTE_CANDIDATES)
-        attribute = (
-            str(entry.get("AttributeName")) if entry else C.ATTR_PRIMARY_BATT
-        )
+        attribute = str(entry.get("AttributeName")) if entry else C.ATTR_PRIMARY_BATT
         self._set_attribute(attribute, config.token)
         self._cache = None

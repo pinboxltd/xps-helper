@@ -314,6 +314,19 @@ def _cmd_gui(args: argparse.Namespace, service: XpsHelper) -> int:
     return run_gui(service, use_tray=not args.no_tray)
 
 
+def _cmd_diagnose_wmi(args: argparse.Namespace, service: XpsHelper) -> int:
+    """Deep WMI diagnosis: which Dell interfaces exist, and why one failed."""
+    from .backends.wmi_diagnose import render as render_diagnosis
+    from .backends.wmi_diagnose import run_diagnosis, to_json
+
+    diagnosis = run_diagnosis(timeout=args.timeout)
+    if args.json:
+        print(to_json(diagnosis))
+    else:
+        print(render_diagnosis(diagnosis))
+    return EXIT_OK if not diagnosis.get("error") else EXIT_ERROR
+
+
 def _cmd_capabilities(args: argparse.Namespace, service: XpsHelper) -> int:
     caps = service.capabilities(refresh=True)
     if args.json:
@@ -450,6 +463,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     capabilities.add_argument("--json", action="store_true", help="Emit JSON.")
     capabilities.set_defaults(func=_cmd_capabilities)
+
+    diagnose = subparsers.add_parser(
+        "diagnose-wmi", parents=[_make_common(suppressed=True)],
+        help="Deep WMI diagnosis: which Dell BIOS interfaces exist on this machine.",
+    )
+    diagnose.add_argument("--json", action="store_true", help="Emit JSON.")
+    diagnose.add_argument(
+        "--timeout", type=int, default=120, help="Seconds to allow for the WMI queries."
+    )
+    diagnose.set_defaults(func=_cmd_diagnose_wmi)
 
     settings = subparsers.add_parser(
         "settings", parents=[_make_common(suppressed=True)], help="View or change persisted settings."

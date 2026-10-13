@@ -276,7 +276,10 @@ class HelperWindow:
         ttk.Button(actions, text="Doctor report", command=self._show_doctor).pack(
             side="left", padx=6
         )
-        ttk.Button(actions, text="Apply saved", command=self._on_apply_saved).pack(side="left")
+        ttk.Button(actions, text="Diagnose WMI", command=self._show_diagnosis).pack(side="left")
+        ttk.Button(actions, text="Apply saved", command=self._on_apply_saved).pack(
+            side="left", padx=6
+        )
 
         self._message_label = ttk.Label(
             outer, textvariable=self._message_var, wraplength=400, justify="left"
@@ -571,10 +574,33 @@ class HelperWindow:
 
     def _report_error(self, error: Exception) -> None:
         if isinstance(error, XpsHelperError):
-            self._set_message(str(error), severity="error")
+            message = str(error)
+            # Point at the deep diagnostic when the problem is the BIOS interface
+            # itself: that report says exactly why it was not found.
+            if "BIOSAttributeInterface" in message or "Cannot change settings" in message:
+                message += "  Use 'Diagnose WMI' for a detailed report."
+            self._set_message(message, severity="error")
         else:
             self._set_message(f"Unexpected error: {error}", severity="error")
         log.warning("operation failed: %s", error)
+
+    def _show_text_window(self, title: str, text: str) -> None:
+        """Display a block of monospace text in a scrollable window."""
+        popup = self.tk.Toplevel(self.root)
+        popup.title(title)
+        popup.geometry("860x600")
+        frame = self.ttk.Frame(popup)
+        frame.pack(fill="both", expand=True)
+        scrollbar = self.ttk.Scrollbar(frame)
+        scrollbar.pack(side="right", fill="y")
+        widget = self.tk.Text(
+            frame, wrap="none", font=("Consolas", 9), yscrollcommand=scrollbar.set
+        )
+        widget.insert("1.0", text or "(no output)")
+        widget.configure(state="disabled")
+        widget.pack(fill="both", expand=True)
+        scrollbar.configure(command=widget.yview)
+        self.ttk.Button(popup, text="Close", command=popup.destroy).pack(pady=6)
 
     def _show_doctor(self) -> None:
         from ..doctor import run_doctor
@@ -586,14 +612,26 @@ class HelperWindow:
             if error is not None:
                 self._report_error(error)
                 return
-            popup = self.tk.Toplevel(self.root)
-            popup.title("Doctor report")
-            popup.geometry("720x520")
-            text = self.tk.Text(popup, wrap="none", font=("Consolas", 9))
-            text.insert("1.0", result or "")
-            text.configure(state="disabled")
-            text.pack(fill="both", expand=True)
-            self.ttk.Button(popup, text="Close", command=popup.destroy).pack(pady=6)
+            self._show_text_window("Doctor report", result or "")
+
+        self._run_async(work, done)
+
+    def _show_diagnosis(self) -> None:
+        """Explain exactly which Dell BIOS interface this machine exposes."""
+        from ..backends.wmi_diagnose import render as render_diagnosis
+        from ..backends.wmi_diagnose import run_diagnosis
+
+        self._set_message("Querying WMI interfaces...", severity="info")
+
+        def work():
+            return render_diagnosis(run_diagnosis())
+
+        def done(result, error) -> None:
+            if error is not None:
+                self._report_error(error)
+                return
+            self._set_message("WMI diagnosis complete.", severity="ok")
+            self._show_text_window("WMI diagnosis", result or "")
 
         self._run_async(work, done)
 

@@ -215,7 +215,7 @@ def test_backend_unavailable_off_windows():
 
 
 def test_probe_reports_missing_interface_and_explains():
-    runner = ScriptedRunner(read_json={"interface_found": False, "error": "not found"})
+    runner = ScriptedRunner(read_json={"interface_found": False, "errors": ["not found"]})
     backend = FakeWmiBios(runner=runner)
     caps = backend.probe()
 
@@ -362,3 +362,111 @@ def test_interface_constants_match_the_documented_dell_interface():
     assert C.WMI_BIOS_STATUS_TEXT[0] == "Success"
     assert C.WMI_BIOS_STATUS_TEXT[3] == "Access denied"
     assert C.WMI_BIOS_STATUS_TEXT[4] == "Not supported"
+
+
+# ---------------------------------------------------------------------------
+# Dual-provider support. Regression guard for a real field failure: querying
+# only the CIM provider reported "the BIOS did not expose BIOSAttributeInterface"
+# on a machine where the interface exists but is reachable only over the legacy
+# DCOM/WMI provider (which is what Dell's own sample scripts use).
+# ---------------------------------------------------------------------------
+def test_read_script_tries_cim_then_legacy_wmi():
+    from xpshelper.backends.wmi_bios import READ_SCRIPT
+
+    assert "Get-CimInstance" in READ_SCRIPT
+    assert "Get-WmiObject" in READ_SCRIPT
+    # The provider loop must try CIM first, then the legacy DCOM provider.
+    assert "foreach ($api in @('cim', 'wmi'))" in READ_SCRIPT
+    assert READ_SCRIPT.index("Get-CimInstance -Namespace") < READ_SCRIPT.index(
+        "Get-WmiObject -Namespace"
+    )
+
+
+def test_write_script_tries_both_invoke_methods():
+    from xpshelper.backends.wmi_bios import WRITE_SCRIPT
+
+    assert "Invoke-CimMethod" in WRITE_SCRIPT
+    assert "Invoke-WmiMethod" in WRITE_SCRIPT
+
+
+def test_probe_records_which_provider_answered():
+    runner = ScriptedRunner(
+        read_json={
+            "interface_found": True,
+            "api": "wmi",
+            "attributes": [attribute("ThermalManagement", "Quiet", ["quiet"])],
+        }
+    )
+    backend = FakeWmiBios(runner=runner)
+    assert backend.probe().thermal_profiles == (ThermalProfile.QUIET,)
+    assert backend.active_provider() == "wmi"
+    assert any("WMI provider" in note for note in backend.probe().notes)
+
+
+def test_probe_surfaces_provider_errors_when_interface_missing():
+    runner = ScriptedRunner(
+        read_json={
+            "interface_found": False,
+            "errors": [
+                "cim:BIOSAttributeInterface: Not supported",
+                "wmi:BIOSAttributeInterface: Invalid namespace",
+            ],
+        }
+    )
+    caps = FakeWmiBios(runner=runner).probe()
+
+    notes = " ".join(caps.notes)
+    assert "cim:BIOSAttributeInterface" in notes
+    assert "wmi:BIOSAttributeInterface" in notes
+    # And it should point the user at the deep diagnostic.
+    assert "diagnose-wmi" in notes
+
+
+def test_probe_handles_errors_field_as_plain_string():
+    """PowerShell emits a bare string when an array has exactly one element."""
+    runner = ScriptedRunner(
+        read_json={"interface_found": False, "errors": "cim: something went wrong"}
+    )
+    caps = FakeWmiBios(runner=runner).probe()
+    assert any("something went wrong" in note for note in caps.notes)
+
+
+def test_refresh_records_last_error_from_provider_errors():
+    runner = ScriptedRunner(
+        read_json={"interface_found": False, "errors": ["wmi: Access is denied"]}
+    )
+    backend = FakeWmiBios(runner=runner)
+    backend.refresh()
+    assert "Access is denied" in (backend.last_error or "")
+
+
+def test_runner_is_called_with_hidden_window_args_on_windows(monkeypatch):
+    """The GUI must never flash a PowerShell console window."""
+    import sys
+
+    from xpshelper.backends import wmi_bios
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = "{}"
+        stderr = ""
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(wmi_bios.subprocess, "run", fake_run)
+    runner = wmi_bios.default_powershell_runner("Write-Output 1", 5)
+
+    assert runner == (0, "{}", "")
+    assert captured["kwargs"].get("creationflags") == 0x08000000
+    # STARTUPINFO is a Windows-only subprocess attribute; on other platforms the
+    # creation flag alone is what suppresses the console.
+    import subprocess
+
+    if hasattr(subprocess, "STARTUPINFO"):
+        assert "startupinfo" in captured["kwargs"]

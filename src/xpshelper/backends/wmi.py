@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from ..model import BatteryStatus, FanReading, TemperatureReading
+from ..procutil import hidden_process_kwargs, powershell_argv
 
 log = logging.getLogger(__name__)
 
@@ -286,19 +287,12 @@ class WmiTelemetryBackend:
             return RawTelemetry()
         try:
             proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    TELEMETRY_SCRIPT,
-                ],
+                powershell_argv(TELEMETRY_SCRIPT),
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
                 errors="replace",
+                **hidden_process_kwargs(),
             )
         except FileNotFoundError:
             self.last_error = "PowerShell was not found on PATH."

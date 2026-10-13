@@ -90,25 +90,49 @@ else { Warn 'NOT elevated. Reading works; changing settings will be denied. Re-r
 Section '3. Native BIOS interface (WMI-ACPI) - the path XPS Helper uses'
 # ---------------------------------------------------------------------------
 $interfaceOk = $false
-try {
-    $null = Get-CimInstance -Namespace $BiosNs -ClassName 'BIOSAttributeInterface' -ErrorAction Stop
-    $interfaceOk = $true
-    Good "Found BIOSAttributeInterface in $BiosNs (no Dell software needed)."
-} catch {
-    Bad "BIOSAttributeInterface not found in $BiosNs."
-    Note "This means the BIOS does not expose the agentless management interface."
-    Note "Error: $($_.Exception.Message)"
+$interfaceApi = $null
+# Try both WMI providers. Some Dell ACPI-WMI classes are reachable only over the
+# legacy DCOM provider (Get-WmiObject) and not over CIM (Get-CimInstance), which
+# is what Dell's own sample scripts use for this namespace.
+foreach ($api in @('cim', 'wmi')) {
+    try {
+        if ($api -eq 'cim') {
+            $null = Get-CimInstance -Namespace $BiosNs -ClassName 'BIOSAttributeInterface' -ErrorAction Stop
+        } else {
+            $null = Get-WmiObject -Namespace $BiosNs -Class 'BIOSAttributeInterface' -ErrorAction Stop
+        }
+        $interfaceOk = $true
+        $interfaceApi = $api
+        Good "Found BIOSAttributeInterface in $BiosNs via the $api provider (no Dell software needed)."
+        break
+    } catch {
+        Warn "$api provider could not reach BIOSAttributeInterface: $($_.Exception.Message)"
+    }
+}
+
+if (-not $interfaceOk) {
+    Bad "BIOSAttributeInterface is not reachable via either provider in $BiosNs."
+    Note 'Run  xps-helper diagnose-wmi  for a full report to send along.'
     Note ''
-    Note 'Diagnostics: which WMI namespaces/classes DO exist?'
+    Note 'Diagnostics: which namespaces and classes DO exist?'
     try {
         Get-CimInstance -Namespace 'root/dcim' -ClassName '__NAMESPACE' -ErrorAction Stop |
             ForEach-Object { Note "  namespace: root\dcim\$($_.Name)" }
     } catch { Note '  (no root\dcim namespace)' }
     try {
         Get-CimInstance -Namespace 'root/wmi' -ClassName '__CLASS' -ErrorAction Stop |
-            Where-Object { $_.Name -match 'Dell|Bios|BIOS|Attribute|Enum' } |
+            Where-Object { $_.Name -match 'Dell|Bios|BIOS|Attribute|Enum|Thermal' } |
             ForEach-Object { Note "  root\wmi class: $($_.Name)" }
     } catch { }
+    Note ''
+    Note 'ACPI-WMI devices present (ACPI\PNP0C14). None means the firmware'
+    Note 'provides no WMI management interface at all:'
+    try {
+        $acpi = Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction Stop |
+            Where-Object { $_.DeviceID -match '^ACPI\\PNP0C14' }
+        if ($acpi) { $acpi | ForEach-Object { Note "  $($_.DeviceID)" } }
+        else { Note '  (none found)' }
+    } catch { Note '  (could not query)' }
 }
 
 if ($interfaceOk) {
@@ -130,10 +154,19 @@ if ($interfaceOk) {
         Write-Host "  --- $attribute ---"
         $found = $false
         foreach ($class in $AttributeClasses) {
-            try {
-                $items = Get-CimInstance -Namespace $BiosNs -ClassName $class -ErrorAction Stop |
-                    Where-Object { $_.AttributeName -eq $attribute }
-            } catch { continue }
+            $items = $null
+            foreach ($api in @('cim', 'wmi')) {
+                try {
+                    if ($api -eq 'cim') {
+                        $items = Get-CimInstance -Namespace $BiosNs -ClassName $class -ErrorAction Stop |
+                            Where-Object { $_.AttributeName -eq $attribute }
+                    } else {
+                        $items = Get-WmiObject -Namespace $BiosNs -Class $class -ErrorAction Stop |
+                            Where-Object { $_.AttributeName -eq $attribute }
+                    }
+                } catch { continue }
+                if ($items) { break }
+            }
             if (-not $items) { continue }
 
             $found = $true
@@ -169,10 +202,18 @@ if ($interfaceOk) {
         foreach ($attribute in $TargetAttributes) {
             $entry = $null
             foreach ($class in $AttributeClasses) {
-                try {
-                    $entry = Get-CimInstance -Namespace $BiosNs -ClassName $class -ErrorAction Stop |
-                        Where-Object { $_.AttributeName -eq $attribute } | Select-Object -First 1
-                } catch { continue }
+                foreach ($api in @('cim', 'wmi')) {
+                    try {
+                        if ($api -eq 'cim') {
+                            $entry = Get-CimInstance -Namespace $BiosNs -ClassName $class -ErrorAction Stop |
+                                Where-Object { $_.AttributeName -eq $attribute } | Select-Object -First 1
+                        } else {
+                            $entry = Get-WmiObject -Namespace $BiosNs -Class $class -ErrorAction Stop |
+                                Where-Object { $_.AttributeName -eq $attribute } | Select-Object -First 1
+                        }
+                    } catch { continue }
+                    if ($entry) { break }
+                }
                 if ($entry) { break }
             }
             if (-not $entry) { continue }
@@ -180,10 +221,29 @@ if ($interfaceOk) {
             $value = $entry.CurrentValue
             Note "Writing $attribute=$value (unchanged)"
             try {
-                $iface = Get-CimInstance -Namespace $BiosNs -ClassName 'BIOSAttributeInterface' -ErrorAction Stop
-                $result = Invoke-CimMethod -InputObject $iface -MethodName 'SetAttribute' `
-                            -Arguments @{ AttributeName = $attribute; AttributeValue = "$value" } `
-                            -ErrorAction Stop
+                $iface = $null
+                $useApi = $null
+                foreach ($api in @('cim', 'wmi')) {
+                    try {
+                        if ($api -eq 'cim') {
+                            $iface = Get-CimInstance -Namespace $BiosNs -ClassName 'BIOSAttributeInterface' -ErrorAction Stop
+                        } else {
+                            $iface = Get-WmiObject -Namespace $BiosNs -Class 'BIOSAttributeInterface' -ErrorAction Stop
+                        }
+                        $useApi = $api
+                        break
+                    } catch { }
+                }
+                if (-not $iface) { Bad 'No provider could reach BIOSAttributeInterface for the write test.'; continue }
+
+                if ($useApi -eq 'cim') {
+                    $result = Invoke-CimMethod -InputObject $iface -MethodName 'SetAttribute' `
+                                -Arguments @{ AttributeName = $attribute; AttributeValue = "$value" } `
+                                -ErrorAction Stop
+                } else {
+                    $result = Invoke-WmiMethod -InputObject $iface -Name 'SetAttribute' `
+                                -ArgumentList @($attribute, "$value") -ErrorAction Stop
+                }
                 switch ([int]$result.Status) {
                     0 { Good "$attribute write succeeded (status 0). Nothing was changed." }
                     3 { Warn "$attribute write needs the BIOS administrator password (status 3)." }

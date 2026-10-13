@@ -8,7 +8,7 @@ Power Manager, no Command | Configure, no Command | Monitor.
 
 ```
 $ xps-helper status
-XPS Helper 0.1.1  --  XPS 13 7390 2-in-1
+XPS Helper 0.2.0  --  XPS 13 7390 2-in-1
 backends: control=wmi-bios, telemetry=wmi
 
 Thermal profile : Quiet  (CPU power capped)
@@ -36,7 +36,10 @@ On Windows it appears as ordinary WMI classes:
 | Write settings | same namespace → `BIOSAttributeInterface` → `SetAttribute` |
 | BIOS password state | `root\dcim\sysman\wmisecurity` → `PasswordObject` |
 
-XPS Helper talks to that directly over PowerShell CIM. The same interface is
+XPS Helper talks to that directly over PowerShell. WMI exposes the same class
+through two stacks — modern CIM (`Get-CimInstance`) and legacy DCOM
+(`Get-WmiObject`) — and **some machines only answer on one of them**, so the app
+tries CIM first and falls back to DCOM, and tells you which one worked. The same interface is
 available on Linux as `/sys/class/firmware-attributes/dell-wmi-sysman/`, which is
 also implemented.
 
@@ -191,6 +194,7 @@ xps-helper [--backend auto|native|cctk|mock|null] [--config PATH] [-v] <command>
 | `charge [mode] [--start N] [--stop N] [--list] [--json]` | Get or set the charge configuration |
 | `doctor [--json] [--no-raw]` | Diagnose which features work on this machine |
 | `capabilities [--json]` | What the BIOS reports as supported |
+| `diagnose-wmi [--json]` | Deep report: which Dell WMI interfaces exist, probed via both providers |
 | `settings [...]` | View/change persisted settings |
 | `apply` | Re-apply saved settings now |
 | `gui [--no-tray]` | Launch the tray GUI |
@@ -319,7 +323,8 @@ Three decisions worth knowing:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `doctor` says the BIOS did not expose `BIOSAttributeInterface` | Machine predates WMI-ACPI, or the interface is disabled | Monitoring still works. Send the `doctor` output |
+| `doctor` says the BIOS did not expose `BIOSAttributeInterface` | Machine predates WMI-ACPI, the interface is disabled, or it is reachable only over the legacy provider | Run `xps-helper diagnose-wmi` (or the GUI's **Diagnose WMI** button) and send the report |
+| A PowerShell window flashes up repeatedly | Fixed in v0.2.0 | Update to v0.2.0 or later |
 | "Not elevated" warning | Not running as administrator | Writes need elevation; reads do not |
 | "password required" / status 3 | BIOS administrator password is set | Enter it in the GUI, or set `XPSHELPER_BIOS_PWD` |
 | "The firmware reported X after we asked for Y" | The write was silently declined | Detach a Thunderbolt dock and retry |

@@ -14,6 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from . import constants as C
+from .procutil import hidden_process_kwargs, powershell_argv
 
 log = logging.getLogger(__name__)
 
@@ -36,11 +37,12 @@ def _windows_system_info() -> tuple[str | None, str | None]:
     )
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            powershell_argv(script),
             capture_output=True,
             text=True,
             timeout=20,
             errors="replace",
+            **hidden_process_kwargs(),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         log.debug("system info query failed: %s", exc)
@@ -69,11 +71,12 @@ def bios_version() -> str | None:
         script = "(Get-CimInstance -ClassName Win32_BIOS).SMBIOSBIOSVersion"
         try:
             proc = subprocess.run(  # noqa: S603
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                powershell_argv(script),
                 capture_output=True,
                 text=True,
                 timeout=20,
                 errors="replace",
+                **hidden_process_kwargs(),
             )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return None
