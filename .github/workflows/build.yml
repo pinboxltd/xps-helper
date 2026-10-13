@@ -1,0 +1,103 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Needed so the release job can attach assets with the default token.
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is the target platform; Linux is tested too because the
+        # sysfs backend and the whole test suite are platform-independent.
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pip install -e .
+
+      - name: Run the test suite
+        run: python -m pytest -q
+
+  build-exe:
+    name: Build Windows executable
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+          python -m pip install ".[gui]"
+
+      - name: Build with PyInstaller
+        run: pyinstaller packaging/xpshelper.spec --noconfirm
+
+      - name: Verify the executables actually run
+        shell: pwsh
+        run: |
+          $cli = ".\dist\xps-helper\xps-helper.exe"
+          $gui = ".\dist\xps-helper\xps-helper-gui.exe"
+          if (-not (Test-Path $cli)) { throw "CLI executable missing" }
+          if (-not (Test-Path $gui)) { throw "GUI executable missing" }
+
+          # Exit codes matter: a frozen build that cannot import its own
+          # package still produces a binary, so exercise real commands.
+          & $cli --version
+          if ($LASTEXITCODE -ne 0) { throw "xps-helper --version failed" }
+
+          & $cli --backend mock status
+          if ($LASTEXITCODE -ne 0) { throw "status failed" }
+
+          & $cli --backend mock --config "$env:TEMP\xh-ci.json" charge custom --start 60 --stop 80
+          if ($LASTEXITCODE -ne 0) { throw "charge failed" }
+
+          & $cli --backend mock --config "$env:TEMP\xh-ci.json" doctor
+          if ($LASTEXITCODE -ne 0) { throw "doctor failed" }
+
+          Write-Host "All executable smoke checks passed."
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\xps-helper\* -DestinationPath xps-helper-windows.zip -Force
+          Get-Item xps-helper-windows.zip | Format-List Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xps-helper-windows
+          path: xps-helper-windows.zip
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: xps-helper-windows.zip
+          generate_release_notes: true

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xps-helper"
+version = "0.1.0"
+description = "G-Helper-style thermal profile and battery charge control for Dell XPS laptops"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = ">=3.9"
+authors = [{ name = "XPS Helper contributors" }]
+keywords = ["dell", "xps", "thermal", "battery", "cctk", "power-management"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Hardware",
+  "Topic :: System :: Power (UPS)",
+]
+
+# Core is deliberately pure stdlib: Dell control is just a subprocess call to
+# cctk.exe plus optional WMI reads. This keeps the app small and dependency-free.
+dependencies = []
+
+[project.optional-dependencies]
+# Tray icon + generated icon bitmaps. Without these the CLI still works and the
+# GUI falls back to a plain window.
+gui = ["pystray>=0.19", "Pillow>=9"]
+# Faster, more reliable WMI access than the PowerShell CIM fallback.
+wmi = ["pywin32>=305"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+xps-helper = "xpshelper.cli:main"
+
+[project.gui-scripts]
+xps-helper-gui = "xpshelper.gui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+pythonpath = ["src"]
