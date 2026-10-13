@@ -16,3 +16,6 @@ htmlcov/
 
 # PyInstaller
 *.manifest
+
+# Prebuilt release bundles downloaded from GitHub Releases
+*.zip
