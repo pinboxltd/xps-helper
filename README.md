@@ -8,7 +8,7 @@ Power Manager, no Command | Configure, no Command | Monitor.
 
 ```
 $ xps-helper status
-XPS Helper 0.1.0  --  XPS 13 7390 2-in-1
+XPS Helper 0.1.1  --  XPS 13 7390 2-in-1
 backends: control=wmi-bios, telemetry=wmi
 
 Thermal profile : Quiet  (CPU power capped)

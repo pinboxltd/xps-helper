@@ -332,6 +332,12 @@ def _doctor_wmi_bios(report: DoctorReport, backend: "WmiBiosBackend", include_ra
         )
         if data.get("error"):
             message += f" BIOS said: {data['error']}"
+            lowered = str(data["error"]).lower()
+            if any(word in lowered for word in ("access", "denied", "privilege", "elevat")):
+                message += (
+                    " That message points at permissions rather than a missing "
+                    "interface: re-run this command as administrator."
+                )
         report.add("Native BIOS interface (WMI-ACPI)", FAIL, message)
         return
 
