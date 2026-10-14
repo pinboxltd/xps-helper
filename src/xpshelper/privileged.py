@@ -115,6 +115,20 @@ def helper_command() -> list[str]:
     return [str(Path(sys.executable).resolve()), "-m", "xpshelper.elevated_run"]
 
 
+def self_invocation(args: Sequence[str]) -> list[str]:
+    """An argv that re-enters this program with ``args``, frozen or not.
+
+    Frozen builds dispatch through the executable's own entry point, which
+    understands ``-m xpshelper``; a source checkout needs the interpreter and
+    ``-m`` explicitly. Building this in one place keeps callers from hardcoding
+    ``[sys.executable, "-c", ...]``, which silently breaks once packaged: in a
+    frozen build ``sys.executable`` is the app, not Python.
+    """
+    if getattr(sys, "frozen", False):
+        return [str(Path(sys.executable).resolve()), *args]
+    return [str(Path(sys.executable).resolve()), "-m", "xpshelper", *args]
+
+
 def _quote_windows(parts: Sequence[str]) -> str:
     """Quote an argv for the Scheduled Task action's command line."""
     import subprocess as sp

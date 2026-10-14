@@ -240,6 +240,28 @@ def _cmd_profile(args: argparse.Namespace, service: XpsHelper) -> int:
     return EXIT_OK
 
 
+def _cmd_internal_thermal(args: argparse.Namespace, service: XpsHelper) -> int:
+    """Hidden: read or set the thermal mode and print JSON. For the helper child.
+
+    Exists so the privileged child can be started as an ordinary subcommand. The
+    obvious alternative, ``python -c "<snippet>"``, cannot work in a frozen build:
+    ``sys.executable`` is then the app rather than the interpreter, so ``-c`` is
+    meaningless and the snippet is parsed as a subcommand name.
+    """
+    from . import thermal as thermal_mod
+
+    try:
+        if args.mode:
+            tables = thermal_mod.set_thermal_mode(args.mode)
+        else:
+            tables = thermal_mod.read_thermal_mode()
+    except thermal_mod.ThermalError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    print(json.dumps(tables.as_dict()))
+    return EXIT_OK
+
+
 def _cmd_thermal(args: argparse.Namespace, service: XpsHelper) -> int:
     """Read or set the thermal mode over Dell's ACPI-WMI interface.
 
@@ -654,6 +676,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     thermal.add_argument("--json", action="store_true", help="Emit JSON.")
     thermal.set_defaults(func=_cmd_thermal)
+
+    # Hidden: the privileged helper's entry point for thermal work. Not listed in
+    # help, and it takes no service, because it runs in the elevated child. The
+    # name must not start with "-": argparse would treat it as an option rather
+    # than a subcommand.
+    internal = subparsers.add_parser(
+        "internal-thermal", add_help=False, help=argparse.SUPPRESS
+    )
+    internal.add_argument("mode", nargs="?")
+    internal.set_defaults(func=_cmd_internal_thermal)
 
     doctor = subparsers.add_parser(
         "doctor", parents=[_make_common(suppressed=True)],

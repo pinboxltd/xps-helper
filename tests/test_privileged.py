@@ -481,6 +481,56 @@ def test_privileged_run_reports_a_missing_helper(monkeypatch, capsys):
     assert "UAC prompt" in capsys.readouterr().err
 
 
+def test_self_invocation_reenters_the_program_from_source(monkeypatch):
+    """Source checkout: interpreter, ``-m``, package, then args."""
+    monkeypatch.delattr(priv.sys, "frozen", raising=False)
+    argv = priv.self_invocation(["internal-thermal"])
+    assert argv[1:] == ["-m", "xpshelper", "internal-thermal"]
+
+
+def test_self_invocation_reenters_the_program_when_frozen(monkeypatch):
+    """Frozen build: the executable handles ``-m xpshelper`` itself.
+
+    Regression test for a real bug. The thermal helper was started as
+    ``[sys.executable, "-c", snippet]``, which works from source but not once
+    packaged -- ``sys.executable`` is then ``xps-helper.exe``, not Python, so
+    ``-c`` means nothing and the snippet was parsed as a subcommand name. The
+    failure was ``invalid choice: "import json, sys; ..."``.
+    """
+    monkeypatch.setattr(priv.sys, "frozen", True, raising=False)
+    argv = priv.self_invocation(["internal-thermal"])
+    assert "-c" not in argv
+    assert argv[1:] == ["internal-thermal"]
+
+
+def test_thermal_helper_child_is_a_real_subcommand(monkeypatch):
+    """The child must be invoked by subcommand name, never by ``-c``."""
+    from xpshelper.service import make_service
+
+    service = make_service("mock")
+    monkeypatch.setattr(priv, "is_installed", lambda task_name=priv.TASK_NAME: True)
+    monkeypatch.delenv(priv.ENV_PRIVILEGED_CHILD, raising=False)
+    monkeypatch.setattr("xpshelper.elevate.is_elevated", lambda: False)
+
+    captured: dict = {}
+
+    def fake_helper(command, **_kwargs):
+        captured["command"] = list(command)
+        return priv.HelperResult(
+            exit_code=0,
+            stdout='{"error": null, "supported_mask": 15, "current_mode": 1, '
+                   '"fan_failure": 0}',
+        )
+
+    monkeypatch.setattr(priv, "run_via_helper", fake_helper)
+    tables = service._thermal_via_helper(read_only=True)
+
+    command = captured["command"]
+    assert "-c" not in command, command
+    assert "internal-thermal" in command, command
+    assert tables.current_mode == 1
+
+
 def test_write_routing_raises_when_the_helper_fails(monkeypatch):
     """A helper failure must surface, not be swallowed into a false success."""
     from xpshelper.errors import XpsHelperError

@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## v0.3.0
+
+Thermal-mode control, reverse-engineered from Dell and replicated in this
+project's own code, plus a redrawn window. This is the first release where the
+performance mode can actually be changed on a model whose BIOS exposes no
+`ThermalManagement` attribute — an XPS 13 7390 2-in-1 among them.
+
+### Fixed a bug that only appeared in the packaged build
+
+The thermal helper child was started as ``[sys.executable, "-c", snippet]``. That
+works from a source checkout but not once packaged: in a frozen build
+``sys.executable`` is ``xps-helper.exe``, not Python, so ``-c`` means nothing and
+the snippet was parsed as a subcommand name:
+
+```
+xps-helper: error: argument command: invalid choice: "import json, sys; ..."
+```
+
+Thermal control therefore worked from source and was broken in the shipped exe —
+the build nobody tests by hand. The child is now a real hidden subcommand,
+``internal-thermal``, which is identical from source and from the bundle, and
+``privileged.self_invocation()`` builds that argv in one place so no caller can
+reintroduce the ``-c`` form.
 
 ### The window redrawn in G-Helper's style
 

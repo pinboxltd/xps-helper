@@ -319,25 +319,23 @@ class XpsHelper:
     def _thermal_via_helper(
         self, *, mode: str | int | None = None, read_only: bool = False
     ) -> "thermal.ThermalTables":
-        """Run the thermal operation through the no-prompt privileged helper."""
+        """Run the thermal operation through the no-prompt privileged helper.
+
+        The child is invoked as ``<self> internal-thermal [mode]`` rather than
+        ``python -c "<snippet>"``. The snippet form cannot work in a frozen build:
+        ``sys.executable`` is then ``xps-helper.exe``, not Python, so ``-c`` is
+        meaningless and the snippet is parsed as a subcommand name. A real
+        subcommand is identical from source and from the bundled exe.
+        """
         import json as _json
 
         from . import privileged as priv
         from . import thermal as thermal_mod
 
-        if read_only:
-            expression = "print(json.dumps(thermal.read_thermal_mode().as_dict()))"
-        else:
-            expression = (
-                "print(json.dumps(thermal.set_thermal_mode("
-                f"{mode!r}).as_dict()))"
-            )
-        code = (
-            "import json, sys; "
-            f"sys.path.insert(0, {str(_package_root())!r}); "
-            "from xpshelper import thermal; " + expression
-        )
-        result = priv.run_via_helper([sys.executable, "-c", code])
+        argv = priv.self_invocation(["internal-thermal"])
+        if not read_only and mode is not None:
+            argv.append(str(mode))
+        result = priv.run_via_helper(argv)
         if not result.ok:
             from .errors import XpsHelperError
 
