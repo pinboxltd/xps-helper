@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from . import constants as C
 from .procutil import hidden_process_kwargs
 
 log = logging.getLogger(__name__)
@@ -123,10 +124,25 @@ def self_invocation(args: Sequence[str]) -> list[str]:
     ``-m`` explicitly. Building this in one place keeps callers from hardcoding
     ``[sys.executable, "-c", ...]``, which silently breaks once packaged: in a
     frozen build ``sys.executable`` is the app, not Python.
+
+    In a frozen build this deliberately prefers the **console** executable over
+    whichever one is running. The GUI is built with ``console=False`` and has no
+    subcommands at all, so having it re-invoke itself for CLI work fails with
+    ``unrecognized arguments: internal-thermal`` and the thermal buttons silently
+    stop working. Both executables ship side by side, so the sibling is used.
     """
     if getattr(sys, "frozen", False):
-        return [str(Path(sys.executable).resolve()), *args]
+        return [str(_console_executable()), *args]
     return [str(Path(sys.executable).resolve()), "-m", "xpshelper", *args]
+
+
+def _console_executable() -> Path:
+    """The console build beside the running executable, if there is one."""
+    running = Path(sys.executable).resolve()
+    sibling = running.with_name(f"{C.APP_NAME}.exe")
+    if running.name.lower() != sibling.name.lower() and sibling.exists():
+        return sibling
+    return running
 
 
 def _quote_windows(parts: Sequence[str]) -> str:
@@ -311,8 +327,45 @@ Write-Output "removed: {safe_name}"
 """
 
 
+def _task_action_path(task_name: str = TASK_NAME) -> str | None:
+    """The program a registered task runs, or None if it cannot be read.
+
+    ``schtasks`` reports the action in a localised "Task To Run" field, so the
+    line is matched by its executable rather than by a translated label: the
+    action is the first token that looks like a Windows path.
+    """
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv
+            ["schtasks", "/query", "/tn", task_name, "/fo", "LIST", "/v"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            **hidden_process_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    for line in (proc.stdout or "").splitlines():
+        for token in line.split():
+            stripped = token.strip().strip('"')
+            if len(stripped) > 3 and stripped[1:3] == ":\\":
+                return stripped
+    return None
+
+
 def is_installed(task_name: str = TASK_NAME) -> bool:
-    """Whether the privileged helper task exists. Needs no elevation to check."""
+    """Whether the privileged helper task exists **and can still run**.
+
+    Needs no elevation to check.
+
+    Existence alone is not enough. The task stores an absolute path to the
+    executable, so a helper registered from one copy of the app is dead once that
+    copy moves or is deleted -- and a copied-to-another-machine build would find
+    the path of whoever installed it there. In both cases ``schtasks /run`` fails
+    and the caller sees only a timeout, so a task whose target is missing reports
+    as not installed and the caller is told to reinstall.
+    """
     if sys.platform != "win32":
         return False
     try:
@@ -325,7 +378,32 @@ def is_installed(task_name: str = TASK_NAME) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
-    return proc.returncode == 0
+    if proc.returncode != 0:
+        return False
+    return action_target_exists(task_name)
+
+
+def action_target_exists(task_name: str = TASK_NAME) -> bool:
+    """Whether a registered task's action still points at something real.
+
+    Split out from :func:`is_installed` so it can be tested without fighting the
+    test suite's autouse "no helper installed" fixture.
+    """
+    if sys.platform != "win32":
+        return False
+    target = _task_action_path(task_name)
+    if target is None:
+        # Registered, but the action could not be read. Assume it works rather
+        # than forcing a needless reinstall on a localised Windows.
+        return True
+    if not Path(target).exists():
+        log.warning(
+            "the privileged helper task points at %s, which no longer exists; "
+            "reinstall it with 'xps-helper helper --install --force'",
+            target,
+        )
+        return False
+    return True
 
 
 def run_elevated_once(script: str, *, timeout: int = 300) -> str:
@@ -534,10 +612,17 @@ def run_via_helper(
 def describe() -> dict[str, Any]:
     """State for `doctor` and `capabilities`."""
     installed = is_installed()
+    # Report what the task is *actually* registered to run, not what installing
+    # now would produce. Those differ as soon as the app is copied elsewhere, and
+    # the registered path is the one that decides whether the helper works.
+    registered = _task_action_path() if installed else None
+    stale = bool(registered) and not Path(registered).exists()
     return {
         "task_name": TASK_NAME,
         "installed": installed,
         "command": helper_command(),
+        "registered_command": registered,
+        "stale": stale,
         "prompts_per_use": 0 if installed else None,
         "note": (
             "Privileged operations run through the registered Scheduled Task, so no "

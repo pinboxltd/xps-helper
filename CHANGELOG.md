@@ -7,22 +7,61 @@ project's own code, plus a redrawn window. This is the first release where the
 performance mode can actually be changed on a model whose BIOS exposes no
 `ThermalManagement` attribute — an XPS 13 7390 2-in-1 among them.
 
-### Fixed a bug that only appeared in the packaged build
+### Two bugs that only existed in the packaged build
 
-The thermal helper child was started as ``[sys.executable, "-c", snippet]``. That
-works from a source checkout but not once packaged: in a frozen build
-``sys.executable`` is ``xps-helper.exe``, not Python, so ``-c`` means nothing and
-the snippet was parsed as a subcommand name:
+Neither was visible from a source checkout, which is where all the earlier testing
+happened. Both made the shipped exe behave differently from the thing tested.
+
+**The thermal helper could not start.** The child was launched as
+``[sys.executable, "-c", snippet]``. In a frozen build ``sys.executable`` is
+``xps-helper.exe``, not Python, so ``-c`` meant nothing and the snippet was parsed
+as a subcommand name:
 
 ```
 xps-helper: error: argument command: invalid choice: "import json, sys; ..."
 ```
 
-Thermal control therefore worked from source and was broken in the shipped exe —
-the build nobody tests by hand. The child is now a real hidden subcommand,
-``internal-thermal``, which is identical from source and from the bundle, and
-``privileged.self_invocation()`` builds that argv in one place so no caller can
-reintroduce the ``-c`` form.
+Thermal control therefore worked from source and was broken in the exe. The child
+is now a real hidden subcommand, ``internal-thermal``, and
+``privileged.self_invocation()`` builds that argv in one place.
+
+**The windowed build could not delegate at all.** ``xps-helper-gui.exe`` is built
+with ``console=False`` and has no subcommands, so re-invoking *itself* for CLI work
+produced
+
+```
+xps-helper-gui: error: unrecognized arguments: internal-thermal
+```
+
+and the thermal buttons in the window silently stopped working — the hint said
+only "the privileged helper could not reach the thermal interface". A frozen build
+now prefers the **console** executable beside it, which is what has the
+subcommands.
+
+### Portability
+
+The helper stores an absolute path, so it breaks the moment the app moves — and on
+another machine the registered path belongs to whoever installed it there. Three
+fixes:
+
+- ``self_invocation`` prefers the console build, so the GUI works from any location.
+- ``is_installed`` now checks that the task's **target exists**, not merely that the
+  task exists. A task pointing at a missing path reports as not installed instead
+  of producing a bare timeout, and logs the exact reinstall command.
+- ``helper`` reports the action that is *registered*, not the one that installing
+  now would produce. Those differ as soon as the app is copied, and only the
+  registered one decides whether the helper works.
+
+The exe itself needs no Python and no Dell software: copy ``dist\xps-helper\\``
+anywhere and run it. The single unavoidable step is ``helper --install``, because
+creating a Scheduled Task at ``RunLevel Highest`` requires an administrator — that
+is the one UAC prompt, and it cannot be pre-baked into a build.
+
+``scripts/build_exe.ps1`` wraps the build: it runs the tests, builds, smoke-tests
+the result, and drops a ``DO-NOT-RUN.txt`` in PyInstaller's scratch directory —
+whose ``xps-helper.exe`` looks runnable but has no ``_internal\\`` beside it, and
+fails with *"Failed to load Python DLL"*, which reads like a broken build rather
+than the wrong file being run.
 
 ### The window redrawn in G-Helper's style
 

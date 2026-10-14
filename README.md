@@ -244,6 +244,38 @@ Dell Power Manager still works and remains a fine alternative; the difference is
 XPS Helper now does it too, and does it in its own code rather than by driving Dell's
 binaries.
 
+### Setting up on a machine that has never run this
+
+The executables are self-contained — copy `dist\xps-helper\` anywhere and
+`xps-helper.exe` runs, with no Python and no Dell software installed. Two things
+need doing once:
+
+```powershell
+# 1. Check what this machine supports (no elevation, changes nothing).
+xps-helper.exe doctor
+
+# 2. Register the privileged helper. THIS IS THE ONE UAC PROMPT.
+xps-helper.exe helper --install
+```
+
+Step 2 is what makes every later action prompt-free. It cannot be pre-baked into
+the build, because it means creating a Scheduled Task at `RunLevel Highest`, and
+Windows requires an administrator to do that. One prompt, then never again.
+
+If you move or rename the folder afterwards, the registered task still points at
+the old path and privileged actions stop working. Re-run:
+
+```powershell
+xps-helper.exe helper --install --force
+```
+
+`xps-helper.exe helper` reports what the task is *actually* registered to run and
+warns when that path has gone missing, rather than claiming everything is fine.
+
+Dell Power Manager still works and remains a fine alternative; the difference is that
+XPS Helper now does it too, and does it in its own code rather than by driving Dell's
+binaries.
+
 ### Doing it without a UAC prompt
 
 Worth recording, because it is the answer to "why does Dell never prompt?":
@@ -383,9 +415,30 @@ python -m xpshelper doctor
 ### Option C — build the .exe yourself
 
 ```powershell
+pwsh -File scripts/build_exe.ps1            # runs the tests, builds, smoke-tests
+pwsh -File scripts/build_exe.ps1 -Clean     # also wipe build/ and dist/ first
+```
+
+Or drive PyInstaller directly:
+
+```powershell
 pip install pyinstaller
 pyinstaller packaging/xpshelper.spec --noconfirm
 ```
+
+Either way, **only run what is in `dist\xps-helper\`.**
+
+> **Do not run `build\xpshelper\xps-helper.exe`.** PyInstaller leaves a copy of the
+> executable in `build\`, and it is a scratch artefact: there is no `_internal\`
+> directory beside it, so launching it fails with
+>
+> ```
+> Failed to load Python DLL '...\build\xpshelper\_internal\python312.dll'.
+> LoadLibrary: The specified module could not be found.
+> ```
+>
+> That message looks like a broken build but only means the wrong file was run. The
+> build script drops a `DO-NOT-RUN.txt` in that directory for this reason.
 
 ---
 

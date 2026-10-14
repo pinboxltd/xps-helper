@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -168,7 +169,7 @@ def test_run_via_helper_refuses_when_not_installed(monkeypatch):
 
 def test_is_installed_is_false_off_windows(monkeypatch):
     monkeypatch.setattr(priv.sys, "platform", "linux")
-    assert priv.is_installed() is False
+    assert priv.action_target_exists() is False
 
 
 def test_describe_reports_prompt_behaviour(monkeypatch):
@@ -481,7 +482,99 @@ def test_privileged_run_reports_a_missing_helper(monkeypatch, capsys):
     assert "UAC prompt" in capsys.readouterr().err
 
 
-def test_self_invocation_reenters_the_program_from_source(monkeypatch):
+def test_frozen_gui_delegates_to_the_console_executable(tmp_path, monkeypatch):
+    """A packaged GUI must re-invoke the console build, not itself.
+
+    Regression test for a real bug seen on a frozen build: ``xps-helper-gui.exe``
+    is built with ``console=False`` and has no subcommands, so re-invoking itself
+    produced
+
+        xps-helper-gui: error: unrecognized arguments: internal-thermal
+
+    and the thermal buttons in the window silently stopped working.
+    """
+    console = tmp_path / "xps-helper.exe"
+    console.write_bytes(b"MZ")  # only existence is checked
+    gui = tmp_path / "xps-helper-gui.exe"
+    gui.write_bytes(b"MZ")
+
+    monkeypatch.setattr(priv.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(priv.sys, "executable", str(gui), raising=False)
+
+    argv = priv.self_invocation(["internal-thermal"])
+    assert Path(argv[0]).name == "xps-helper.exe"
+    assert argv[1:] == ["internal-thermal"]
+
+
+def test_frozen_console_executable_uses_itself(tmp_path, monkeypatch):
+    console = tmp_path / "xps-helper.exe"
+    console.write_bytes(b"MZ")
+    monkeypatch.setattr(priv.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(priv.sys, "executable", str(console), raising=False)
+
+    argv = priv.self_invocation(["internal-thermal"])
+    assert Path(argv[0]).name == "xps-helper.exe"
+
+
+def test_frozen_build_without_a_sibling_falls_back_to_itself(tmp_path, monkeypatch):
+    """An unusual layout must still produce something runnable."""
+    gui = tmp_path / "xps-helper-gui.exe"
+    gui.write_bytes(b"MZ")
+    monkeypatch.setattr(priv.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(priv.sys, "executable", str(gui), raising=False)
+
+    argv = priv.self_invocation(["internal-thermal"])
+    assert Path(argv[0]).name == "xps-helper-gui.exe"
+
+
+def test_a_task_pointing_at_a_missing_target_is_treated_as_stale(
+    tmp_path, monkeypatch
+):
+    """Portability guard.
+
+    The task stores an absolute path. Once the app moves -- or on another machine,
+    where the path belongs to whoever installed it -- the task can never start, and
+    callers would otherwise just see a timeout. It must report as not installed so
+    the user is told to reinstall.
+    """
+    missing = tmp_path / "gone" / "xps-helper.exe"
+
+    class Ok:
+        returncode = 0
+        stdout = f"TaskName:  x\nTask To Run:  {missing} -m xpshelper.elevated_run\n"
+
+    monkeypatch.setattr(priv.sys, "platform", "win32")
+    monkeypatch.setattr(priv.subprocess, "run", lambda *a, **k: Ok())
+    assert priv.action_target_exists() is False
+
+
+def test_a_task_pointing_at_a_real_target_is_treated_as_valid(
+    tmp_path, monkeypatch
+):
+    present = tmp_path / "xps-helper.exe"
+    present.write_bytes(b"MZ")
+
+    class Ok:
+        returncode = 0
+        stdout = f"Task To Run:  {present} -m xpshelper.elevated_run\n"
+
+    monkeypatch.setattr(priv.sys, "platform", "win32")
+    monkeypatch.setattr(priv.subprocess, "run", lambda *a, **k: Ok())
+    assert priv.action_target_exists() is True
+
+
+def test_an_unreadable_task_action_is_treated_as_valid(monkeypatch):
+    """A localised Windows may not yield a parseable path; do not force a reinstall."""
+
+    class Ok:
+        returncode = 0
+        stdout = "Some localised field with no path at all\n"
+
+    monkeypatch.setattr(priv.sys, "platform", "win32")
+    monkeypatch.setattr(priv.subprocess, "run", lambda *a, **k: Ok())
+    assert priv.action_target_exists() is True
+
+
     """Source checkout: interpreter, ``-m``, package, then args."""
     monkeypatch.delattr(priv.sys, "frozen", raising=False)
     argv = priv.self_invocation(["internal-thermal"])

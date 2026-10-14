@@ -457,7 +457,18 @@ def _cmd_helper(args: argparse.Namespace, service: XpsHelper) -> int:
     else:
         print(f"privileged helper : {'installed' if state['installed'] else 'not installed'}")
         print(f"task name         : {state['task_name']}")
-        print(f"action            : {' '.join(state['command'])}")
+        # Report the *registered* action when there is one: that is what decides
+        # whether the helper actually works, and it differs from what installing
+        # now would produce as soon as the app has been moved.
+        if state["installed"] and state.get("registered_command"):
+            print(f"registered action : {state['registered_command']}")
+            if state.get("stale"):
+                print(
+                    "warning           : that path no longer exists. Reinstall with "
+                    "'xps-helper helper --install --force'."
+                )
+        else:
+            print(f"action            : {' '.join(state['command'])}")
         print(f"note              : {state['note']}")
     return EXIT_OK
 
