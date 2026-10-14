@@ -46,6 +46,9 @@ class Settings:
     apply_profile_on_startup: bool = False
     apply_charge_on_startup: bool = False
     reapply_on_power_change: bool = False
+    #: GUI theme: "dark", "light", or "windows" to follow the OS. None means
+    #: "windows", which is the least surprising default for a first run.
+    theme: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

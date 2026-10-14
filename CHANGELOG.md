@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### The window redrawn in G-Helper's style
+
+The GUI now uses the visual language of
+[G-Helper](https://github.com/seerge/g-helper) — the same palette, the same flat
+controls, and the same idea that **the active option owns its accent colour**, so
+the window reads at a glance. Both projects are GPL-3.0, so the design is shared
+legitimately; `CREDITS.md` records the debt.
+
+What was taken is the *token set and control behaviour*, not code. G-Helper's
+originals are C#/WinForms (`RForm`, `ControlHelper`, `RButton`) and this is
+Python/tkinter, so nothing transfers literally:
+
+- **Palette** — `RForm.InitColors`'s dark surface (`#1c1c1c`), button fills
+  (`#2e2e2e` / `#242424`), borders and text colours, plus the light half.
+- **Accents** — its `colorEco` green, `colorStandard` blue, `colorTurbo` red and
+  `colorCustom` orange, mapped onto Dell's modes as a temperature ladder: green
+  `Quiet`, cyan `Cool`, blue `Balanced`, red `Ultra`.
+- **Flat controls** — buttons are flat with a 1px border and never beveled, group
+  headings sit on a contrasting strip, hints are subdued.
+- **Theme modes** — `dark`, `light`, or `windows` to follow the OS, the same
+  setting names G-Helper uses. Default follows the OS.
+
+Two implementation notes worth keeping:
+
+- **`ttk` cannot do this.** ttk styling is bound to the platform theme, so "flat
+  dark button with a coloured active state" is not expressible. The mode buttons
+  are plain `tk` widgets drawing on a `Canvas`.
+- **Text contrast is computed, not assumed.** G-Helper hardcodes white on an
+  active button, which would put white on the light custom orange. The active
+  foreground is chosen from the accent's luma instead.
+
+The theme is read once at construction rather than switched live: restyling every
+widget on the fly is what makes this kind of GUI fragile.
+
 ### Thermal modes work — reverse-engineered and replicated
 
 **This is the feature the whole investigation was for.** XPS Helper can now read and

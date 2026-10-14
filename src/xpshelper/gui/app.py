@@ -33,6 +33,7 @@ from ..model import (
     ThermalProfile,
 )
 from ..service import ConfigStore, XpsHelper, make_service
+from . import theme, widgets
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +85,18 @@ def status_rows(status: SystemStatus) -> list[tuple[str, str]]:
 THERMAL_MODE_ORDER = ("Balanced", "Cool", "Quiet", "Ultra")
 
 
+def _normalise(value) -> str:
+    """Reduce an enum, token or string to a comparable string.
+
+    ``ThermalProfile`` and ``ChargeMode`` are ``str`` enums, but
+    ``ThermalProfile.QUIET == "quiet"`` is False (the value is ``"Quiet"``), so a
+    direct comparison against a token silently fails. This uses ``.value`` when
+    present and falls back to ``str``.
+    """
+    inner = getattr(value, "value", value)
+    return str(inner)
+
+
 def profile_options(caps) -> tuple[ThermalProfile, ...]:
     """Profiles to offer. Falls back to all when the probe found none."""
     return caps.thermal_profiles or tuple(ThermalProfile)
@@ -110,9 +123,15 @@ class HelperWindow:
         self._busy = False
         self._photo = None
 
+        # G-Helper's palette. Read once at construction: the window is not
+        # designed to flip theme live, and re-styling every widget on the fly is
+        # what makes this kind of GUI fragile.
+        self.palette = theme.resolve(getattr(service.settings, "theme", None))
+
         self.root = tk.Tk()
         self.root.title(WINDOW_TITLE)
         self.root.minsize(420, 460)
+        self.root.configure(bg=self.palette.form_back)
 
         self._status_var = tk.StringVar(value="")
         self._message_var = tk.StringVar(value="")
@@ -136,108 +155,120 @@ class HelperWindow:
     # -- construction -----------------------------------------------------
     def _build(self) -> None:
         tk, ttk = self.tk, self.ttk
+        p = self.palette
 
-        outer = ttk.Frame(self.root, padding=12)
+        outer = tk.Frame(self.root, bg=p.form_back, padx=theme.WINDOW_PAD,
+                         pady=theme.WINDOW_PAD)
         outer.pack(fill="both", expand=True)
+        self._outer = outer
 
-        header = ttk.Label(
+        header = tk.Label(
             outer,
             text=self._header_text(),
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 11, "bold"),
+            bg=p.form_back,
+            fg=p.fore_main,
             wraplength=400,
             justify="left",
+            anchor="w",
         )
-        header.pack(anchor="w")
-        ttk.Label(
+        header.pack(fill="x")
+        tk.Label(
             outer,
             text=f"control: {getattr(self.service.control, 'name', '?')}   "
                  f"telemetry: {getattr(self.service.telemetry, 'name', '?')}",
-            foreground="#666666",
-        ).pack(anchor="w", pady=(0, 8))
+            bg=p.form_back,
+            fg=p.fore_dim,
+            font=("Segoe UI", 8),
+            anchor="w",
+        ).pack(fill="x", pady=(0, theme.GROUP_GAP))
 
-        # -- performance --------------------------------------------------
-        ttk.Label(outer, text="Performance", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        # -- performance (BIOS ThermalManagement attribute) ---------------
+        self._profile_header = widgets.SectionHeader(
+            outer, text="Performance profile", palette=p
+        )
+        self._profile_header.pack(fill="x", pady=(0, 4))
 
-        self._profile_frame = ttk.Frame(outer)
-        self._profile_frame.pack(anchor="w", fill="x", pady=(2, 2))
+        self._profile_frame = tk.Frame(outer, bg=p.form_back)
+        self._profile_frame.pack(fill="x", pady=(0, 4))
 
-        self._profile_buttons: dict[ThermalProfile, ttk.Radiobutton] = {}
+        self._profile_buttons: dict[ThermalProfile, widgets.ModeButton] = {}
         # Deliberately NOT calling capabilities() here: probing spawns cctk and
         # PowerShell subprocesses and would freeze the window before it appears.
         # All options start enabled and unsupported ones are disabled as soon as
         # the first async status refresh returns a capability report.
         for profile in ThermalProfile:
-            button = ttk.Radiobutton(
+            button = widgets.ModeButton(
                 self._profile_frame,
                 text=profile.label,
-                value=profile.value,
-                variable=self._profile_var,
-                command=self._on_profile_selected,
+                accent=theme.profile_accent(profile.value),
+                palette=p,
+                command=lambda value=profile.value: self._select_and_apply_profile(value),
             )
-            button.pack(side="left", padx=(0, 8))
+            button.pack(side="left", padx=(0, 6))
             self._profile_buttons[profile] = button
 
-        self._profile_hint = ttk.Label(
-            outer, text="", wraplength=400, justify="left", foreground="#666666"
-        )
-        self._profile_hint.pack(anchor="w", pady=(0, 8))
-
-        ttk.Separator(outer).pack(fill="x", pady=4)
+        self._profile_hint = widgets.Hint(outer, palette=p)
+        self._profile_hint.pack(fill="x", pady=(0, theme.GROUP_GAP))
 
         # -- thermal mode (Dell ACPI-WMI) ---------------------------------
         #
         # A separate interface from the ThermalManagement BIOS attribute above.
         # This is the one Dell Power Manager uses on models that have no such
         # attribute (this XPS 13 7390 2-in-1 among them), and it is why the
-        # Performance radios above are correctly disabled there.
-        ttk.Label(
-            outer, text="Thermal mode (Dell ACPI-WMI)", font=("Segoe UI", 10, "bold")
-        ).pack(anchor="w")
+        # Performance buttons above are correctly disabled there.
+        self._thermal_header = widgets.SectionHeader(
+            outer, text="Thermal mode (Dell ACPI-WMI)", palette=p
+        )
+        self._thermal_header.pack(fill="x", pady=(0, 4))
 
-        self._thermal_frame = ttk.Frame(outer)
-        self._thermal_frame.pack(anchor="w", fill="x", pady=(2, 2))
+        self._thermal_frame = tk.Frame(outer, bg=p.form_back)
+        self._thermal_frame.pack(fill="x", pady=(0, 4))
 
         self._thermal_var = tk.StringVar(value="")
-        self._thermal_buttons: dict[str, ttk.Radiobutton] = {}
+        self._thermal_buttons: dict[str, widgets.ModeButton] = {}
         for name in THERMAL_MODE_ORDER:
-            button = ttk.Radiobutton(
+            button = widgets.ModeButton(
                 self._thermal_frame,
                 text=name,
-                value=name,
-                variable=self._thermal_var,
-                command=self._on_thermal_mode_selected,
+                accent=theme.mode_accent(name),
+                palette=p,
+                command=lambda value=name: self._select_and_apply_thermal(value),
             )
-            button.pack(side="left", padx=(0, 8))
+            button.pack(side="left", padx=(0, 6))
             self._thermal_buttons[name] = button
 
-        self._thermal_hint = ttk.Label(
-            outer, text="", wraplength=400, justify="left", foreground="#666666"
-        )
-        self._thermal_hint.pack(anchor="w", pady=(0, 8))
-
-        ttk.Separator(outer).pack(fill="x", pady=4)
+        self._thermal_hint = widgets.Hint(outer, palette=p)
+        self._thermal_hint.pack(fill="x", pady=(0, theme.GROUP_GAP))
 
         # -- battery charge -----------------------------------------------
-        ttk.Label(outer, text="Battery charge", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self._charge_header = widgets.SectionHeader(
+            outer, text="Battery charge", palette=p
+        )
+        self._charge_header.pack(fill="x", pady=(0, 4))
 
-        self._charge_frame = ttk.Frame(outer)
-        self._charge_frame.pack(anchor="w", fill="x", pady=(2, 2))
+        self._charge_frame = tk.Frame(outer, bg=p.form_back)
+        self._charge_frame.pack(fill="x", pady=(0, 4))
 
-        self._charge_buttons: dict[ChargeMode, ttk.Radiobutton] = {}
-        for mode in ChargeMode:
-            button = ttk.Radiobutton(
+        # Charge modes are exclusive but there are five of them, so they wrap onto
+        # two rows rather than becoming an unreadably wide single row.
+        self._charge_buttons: dict[ChargeMode, widgets.ModeButton] = {}
+        for index, mode in enumerate(ChargeMode):
+            button = widgets.ModeButton(
                 self._charge_frame,
                 text=mode.label,
-                value=mode.value,
-                variable=self._charge_var,
-                command=self._on_charge_mode_changed,
+                accent=theme.ACCENT_STANDARD,
+                palette=p,
+                command=lambda value=mode.value: self._select_charge_mode(value),
             )
-            button.pack(anchor="w")
+            button.grid(row=index // 3, column=index % 3, padx=(0, 6), pady=(0, 6),
+                        sticky="w")
             self._charge_buttons[mode] = button
 
-        thresholds = ttk.Frame(outer)
-        thresholds.pack(anchor="w", fill="x", pady=(4, 2))
-        ttk.Label(thresholds, text="Custom start %").pack(side="left")
+        thresholds = tk.Frame(outer, bg=p.form_back)
+        thresholds.pack(fill="x", pady=(2, 2))
+        tk.Label(thresholds, text="Custom start %", bg=p.form_back, fg=p.fore_main,
+                 font=("Segoe UI", 9)).pack(side="left")
         self._start_spin = ttk.Spinbox(
             thresholds,
             from_=C.CUSTOM_START_MIN,
@@ -246,7 +277,8 @@ class HelperWindow:
             textvariable=self._charge_start_var,
         )
         self._start_spin.pack(side="left", padx=(4, 12))
-        ttk.Label(thresholds, text="stop %").pack(side="left")
+        tk.Label(thresholds, text="stop %", bg=p.form_back, fg=p.fore_main,
+                 font=("Segoe UI", 9)).pack(side="left")
         self._stop_spin = ttk.Spinbox(
             thresholds,
             from_=C.CUSTOM_STOP_MIN,
@@ -256,10 +288,8 @@ class HelperWindow:
         )
         self._stop_spin.pack(side="left", padx=(4, 0))
 
-        self._charge_hint = ttk.Label(
-            outer, text="", wraplength=400, justify="left", foreground="#666666"
-        )
-        self._charge_hint.pack(anchor="w", pady=(2, 0))
+        self._charge_hint = widgets.Hint(outer, palette=p)
+        self._charge_hint.pack(fill="x", pady=(2, 0))
 
         self._apply_charge_button = ttk.Button(
             outer, text="Apply charge setting", command=self._on_apply_charge
@@ -491,30 +521,83 @@ class HelperWindow:
             log.info("capability: %s", note)
 
     def _disable_group(self, buttons) -> None:
+        """Disable every ModeButton in a group."""
         for button in buttons.values():
             try:
-                button.configure(state="disabled")
+                button.set_enabled(False)
             except Exception:  # noqa: BLE001
                 pass
 
     def _enable_only(self, buttons, supported) -> None:
+        """Enable only the ModeButtons whose value is supported."""
         for value, button in buttons.items():
             try:
-                button.configure(state="normal" if value in supported else "disabled")
+                button.set_enabled(value in supported)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _mark_selected(self, buttons, selected) -> None:
+        """Show ``selected`` as the active option and clear the rest.
+
+        The accent fill is the only state indicator, so exactly one button may
+        ever be marked -- otherwise the window implies two active modes.
+
+        ``selected`` may be a string token, a ``ThermalProfile`` or a
+        ``ChargeMode``, and the button keys may be enums or plain strings.
+        Everything is normalised before comparing, because
+        ``ThermalProfile.QUIET == "quiet"`` is False and would silently leave the
+        caller's own button unmarked.
+        """
+        wanted = _normalise(selected)
+        for value, button in buttons.items():
+            try:
+                button.set_selected(_normalise(value) == wanted)
             except Exception:  # noqa: BLE001
                 pass
 
     def _set_profile_hint(self, text: str) -> None:
         try:
-            self._profile_hint.configure(text=text)
+            self._profile_hint.set_text(text)
         except Exception:  # noqa: BLE001
             pass
 
     def _set_thermal_hint(self, text: str) -> None:
         try:
-            self._thermal_hint.configure(text=text)
+            self._thermal_hint.set_text(text)
         except Exception:  # noqa: BLE001
             pass
+
+    # -- selection handlers ------------------------------------------------
+    def _select_and_apply_profile(self, token: str) -> None:
+        """Mark a profile and apply it, as clicking the old radio did."""
+        try:
+            profile = ThermalProfile.from_token(token)
+        except Exception:  # noqa: BLE001
+            return
+        self._profile_var.set(token)
+        self._mark_selected(self._profile_buttons, token)
+        self._on_profile_selected()
+
+    def _select_and_apply_thermal(self, name: str) -> None:
+        """Mark a thermal mode and apply it."""
+        self._thermal_var.set(name)
+        self._mark_selected(self._thermal_buttons, name)
+        self._on_thermal_mode_selected()
+
+    def _select_charge_mode(self, token: str) -> None:
+        """Mark a charge mode without applying it.
+
+        Charge is applied by the explicit button, because the custom thresholds
+        have to be filled in first.
+        """
+        self._charge_var.set(token)
+        self._mark_selected(self._charge_buttons, token)
+        try:
+            mode = ChargeMode(token)
+        except ValueError:
+            return
+        self._mark_selected(self._charge_buttons, mode)
+        self._on_charge_mode_changed()
 
     def _disable_thermal_group(self) -> None:
         for button in self._thermal_buttons.values():
@@ -541,7 +624,7 @@ class HelperWindow:
         self._run_async(lambda: self.service.set_thermal_mode(target), done)
 
     def _apply_thermal_result(self, result) -> None:
-        """Refresh the radios from a ThermalTables report."""
+        """Refresh the mode buttons from a ThermalTables report."""
         if result is None:
             return
         try:
@@ -549,13 +632,10 @@ class HelperWindow:
             supported = set(result.supported_modes)
         except Exception:  # noqa: BLE001
             return
-        for name, button in self._thermal_buttons.items():
-            try:
-                button.configure(state="normal" if name in supported else "disabled")
-            except Exception:  # noqa: BLE001
-                pass
+        self._enable_only(self._thermal_buttons, supported)
         if current:
             self._thermal_var.set(current)
+        self._mark_selected(self._thermal_buttons, current)
         if not supported:
             self._set_thermal_hint("The firmware reports no thermal modes.")
         else:
@@ -578,9 +658,11 @@ class HelperWindow:
         profile = settings.as_profile()
         if profile is not None:
             self._profile_var.set(profile.value)
+            self._mark_selected(self._profile_buttons, profile)
         charge = settings.as_charge_config()
         if charge is not None:
             self._charge_var.set(charge.mode.value)
+            self._mark_selected(self._charge_buttons, charge.mode)
             if charge.start is not None:
                 self._charge_start_var.set(str(charge.start))
             if charge.stop is not None:
@@ -590,9 +672,9 @@ class HelperWindow:
 
     def _update_hints(self) -> None:
         profile = ThermalProfile.from_token(self._profile_var.get())
-        self._profile_hint.configure(text=profile.description if profile else "")
+        self._profile_hint.set_text(profile.description if profile else "")
         mode = ChargeMode.from_token(self._charge_var.get())
-        self._charge_hint.configure(text=mode.description if mode else "")
+        self._charge_hint.set_text(mode.description if mode else "")
 
     def _update_threshold_state(self) -> None:
         mode = ChargeMode.from_token(self._charge_var.get())
@@ -614,10 +696,12 @@ class HelperWindow:
         profile = status.profile
         if profile is not None:
             self._profile_var.set(profile.value)
+            self._mark_selected(self._profile_buttons, profile)
         self._active_profile = profile
         charge = status.charge
         if charge is not None:
             self._charge_var.set(charge.mode.value)
+            self._mark_selected(self._charge_buttons, charge.mode)
             if charge.start is not None:
                 self._charge_start_var.set(str(charge.start))
             if charge.stop is not None:
@@ -729,6 +813,7 @@ class HelperWindow:
                 if previous is not None and previous != profile:
                     try:
                         self._profile_var.set(previous.value)
+                        self._mark_selected(self._profile_buttons, previous)
                         self._update_hints()
                     except Exception:  # noqa: BLE001
                         pass
@@ -746,6 +831,7 @@ class HelperWindow:
     def _select_profile(self, profile: ThermalProfile) -> None:
         """Entry point for tray menu actions."""
         self._profile_var.set(profile.value)
+        self._mark_selected(self._profile_buttons, profile.value)
         self._on_profile_selected()
 
     def _on_charge_mode_changed(self) -> None:
@@ -754,6 +840,7 @@ class HelperWindow:
 
     def _select_charge_mode(self, mode: ChargeMode) -> None:
         self._charge_var.set(mode.value)
+        self._mark_selected(self._charge_buttons, mode)
         self._on_charge_mode_changed()
         if not mode.needs_thresholds:
             self._on_apply_charge()

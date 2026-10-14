@@ -17,6 +17,23 @@ repeating the work.
 
 ## Projects whose findings are used
 
+### [seerge/g-helper](https://github.com/seerge/g-helper) — GPL-3.0
+Used for the **visual design**, ported in [`gui/theme.py`](src/xpshelper/gui/theme.py)
+and [`gui/widgets.py`](src/xpshelper/gui/widgets.py):
+
+- The colour table from `RForm.InitColors`: the dark surface, the primary and
+  secondary button fills, borders and text, and the light-mode equivalents.
+- The accent colours (`colorEco`, `colorStandard`, `colorTurbo`, `colorCustom`)
+  and the convention of giving each performance mode one, so the active option is
+  identifiable by colour alone.
+- The flat-control look — 1px bordered flat buttons, group headers on a
+  contrasting strip — and the `dark` / `light` / `windows` theme setting names.
+- The `RButton` behaviours worth copying: a `Secondary` variant for inset rows and
+  a `Borderless` variant for header rows.
+
+Its originals are C#/WinForms and this project is Python/tkinter, so no code
+carries over; what is shared is the token set and the control behaviour.
+
 ### [alexVinarskis/dell-powermanager](https://github.com/alexVinarskis/dell-powermanager) — GPL-3.0
 The most important source. Used for:
 

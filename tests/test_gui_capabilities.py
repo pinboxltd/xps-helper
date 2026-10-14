@@ -1,4 +1,4 @@
-﻿"""Tests for the GUI's capability-driven control states.
+"""Tests for the GUI's capability-driven control states.
 
 The bug these guard against was found from a screenshot of the real window on an
 XPS 13 7390 2-in-1: every thermal radio button was enabled and clickable on a
@@ -37,6 +37,13 @@ class FakeWidget:
     def cget(self, key):
         return self.options.get(key)
 
+    def set_text(self, text: str) -> None:
+        """The themed Hint widget's API, replacing ``configure(text=...)``."""
+        self.configure(text=text)
+
+    def set_palette(self, _palette) -> None:  # pragma: no cover - theming only
+        pass
+
     @property
     def state(self):
         return self.options.get("state")
@@ -47,10 +54,40 @@ class FakeWidget:
 
 
 class FakeButton(FakeWidget):
+    """Stand-in for :class:`xpshelper.gui.widgets.ModeButton`.
+
+    The real widget draws on a Canvas, so it needs a Tk root. These tests stay
+    display-free by recording the same calls, and mirror the real API
+    (``set_enabled`` / ``set_selected``) rather than the old ttk ``configure``.
+    """
+
     def __init__(self, text: str = "") -> None:
         super().__init__(text=text, state="normal")
+        self._enabled = True
+        self._selected = False
+
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+        self.options["state"] = "normal" if enabled else "disabled"
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = bool(selected)
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def selected(self) -> bool:
+        return self._selected
+
+    def set_text(self, text: str) -> None:
+        self.options["text"] = text
 
     def pack(self, **_kwargs) -> None:  # pragma: no cover - layout only
+        pass
+
+    def grid(self, **_kwargs) -> None:  # pragma: no cover - layout only
         pass
 
 
@@ -65,6 +102,7 @@ def _window(caps) -> SimpleNamespace:
     # Bind the real implementations so the test exercises production logic.
     window._disable_group = HelperWindow._disable_group.__get__(window)
     window._enable_only = HelperWindow._enable_only.__get__(window)
+    window._mark_selected = HelperWindow._mark_selected.__get__(window)
     window._set_profile_hint = HelperWindow._set_profile_hint.__get__(window)
     window._apply_capabilities = HelperWindow._apply_capabilities.__get__(window)
     return window
@@ -250,6 +288,8 @@ def _thermal_window() -> SimpleNamespace:
         _thermal_hint=FakeWidget(text=""),
         _thermal_var=SimpleNamespace(_value="", set=lambda v: None),
     )
+    window._enable_only = HelperWindow._enable_only.__get__(window)
+    window._mark_selected = HelperWindow._mark_selected.__get__(window)
     window._set_thermal_hint = HelperWindow._set_thermal_hint.__get__(window)
     window._apply_thermal_result = HelperWindow._apply_thermal_result.__get__(window)
     return window
