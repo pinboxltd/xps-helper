@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from .. import constants as C
+from ..backends.composite import CompositeControlBackend
 from ..errors import XpsHelperError
 from ..logsetup import setup_logging
 from ..model import (
@@ -78,6 +79,11 @@ def status_rows(status: SystemStatus) -> list[tuple[str, str]]:
     return rows
 
 
+#: Display order for the Dell ACPI-WMI thermal-mode radios. Names match
+#: ``thermal.THERMAL_MODES``.
+THERMAL_MODE_ORDER = ("Balanced", "Cool", "Quiet", "Ultra")
+
+
 def profile_options(caps) -> tuple[ThermalProfile, ...]:
     """Profiles to offer. Falls back to all when the probe found none."""
     return caps.thermal_profiles or tuple(ThermalProfile)
@@ -100,6 +106,7 @@ class HelperWindow:
         self.ttk = ttk
         self._closing = False
         self._refresh_in_flight = False
+        self._refresh_handle = None
         self._busy = False
         self._photo = None
 
@@ -121,6 +128,10 @@ class HelperWindow:
         self._wire_tray(use_tray)
         self._sync_from_service()
         self._refresh_async()
+        # Deliberately once, not on every status poll: each thermal read is a WMI
+        # round trip that costs several seconds, and the mode only changes when
+        # this window (or Dell's own app) changes it.
+        self._refresh_thermal()
 
     # -- construction -----------------------------------------------------
     def _build(self) -> None:
@@ -170,6 +181,39 @@ class HelperWindow:
             outer, text="", wraplength=400, justify="left", foreground="#666666"
         )
         self._profile_hint.pack(anchor="w", pady=(0, 8))
+
+        ttk.Separator(outer).pack(fill="x", pady=4)
+
+        # -- thermal mode (Dell ACPI-WMI) ---------------------------------
+        #
+        # A separate interface from the ThermalManagement BIOS attribute above.
+        # This is the one Dell Power Manager uses on models that have no such
+        # attribute (this XPS 13 7390 2-in-1 among them), and it is why the
+        # Performance radios above are correctly disabled there.
+        ttk.Label(
+            outer, text="Thermal mode (Dell ACPI-WMI)", font=("Segoe UI", 10, "bold")
+        ).pack(anchor="w")
+
+        self._thermal_frame = ttk.Frame(outer)
+        self._thermal_frame.pack(anchor="w", fill="x", pady=(2, 2))
+
+        self._thermal_var = tk.StringVar(value="")
+        self._thermal_buttons: dict[str, ttk.Radiobutton] = {}
+        for name in THERMAL_MODE_ORDER:
+            button = ttk.Radiobutton(
+                self._thermal_frame,
+                text=name,
+                value=name,
+                variable=self._thermal_var,
+                command=self._on_thermal_mode_selected,
+            )
+            button.pack(side="left", padx=(0, 8))
+            self._thermal_buttons[name] = button
+
+        self._thermal_hint = ttk.Label(
+            outer, text="", wraplength=400, justify="left", foreground="#666666"
+        )
+        self._thermal_hint.pack(anchor="w", pady=(0, 8))
 
         ttk.Separator(outer).pack(fill="x", pady=4)
 
@@ -286,7 +330,97 @@ class HelperWindow:
         )
         self._message_label.pack(anchor="w", pady=(8, 0))
 
+        # Built lazily: whether we need administrator rights is only known after
+        # the first capability probe, and probing here would freeze the window
+        # before it ever appeared.
+        self._elevate_frame = ttk.Frame(outer)
+
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # -- elevation --------------------------------------------------------
+    def _maybe_offer_elevation(self, caps) -> None:
+        """Offer to re-launch raised when the firmware is refusing access.
+
+        On this hardware the BIOS interface exists but is privilege-gated, so
+        without this the window would show every control as unavailable with no
+        hint that administrator rights are the whole problem.
+        """
+        ttk = self.ttk
+        control = self.service.control
+        # The control object is normally a CompositeControlBackend that picks the
+        # first backend able to work. The capability that matters
+        # (access_denied) lives on the backend it selected, not on the wrapper --
+        # and CompositeControlBackend.selected() returns the wrapper when it has
+        # not picked one, so unwrap explicitly.
+        selected = control
+        if isinstance(control, CompositeControlBackend):
+            selected = control.selected() or control
+
+        needs = False
+        if hasattr(selected, "access_denied"):
+            try:
+                needs = bool(selected.access_denied())
+            except Exception:  # noqa: BLE001 - never break the UI over a probe
+                needs = False
+        if not needs:
+            return
+        if getattr(self, "_elevate_offered", False):
+            return
+        self._elevate_offered = True
+
+        frame = self._elevate_frame
+        frame.pack(anchor="w", fill="x", pady=(6, 0))
+        ttk.Label(
+            frame,
+            text="Administrator rights are required to change BIOS settings.\n"
+                 "The firmware is refusing access to this app as it is.",
+            wraplength=400,
+            justify="left",
+            foreground="#8a6d3b",
+        ).pack(anchor="w")
+        ttk.Button(
+            frame, text="Restart as administrator", command=self._on_elevate
+        ).pack(anchor="w", pady=(4, 0))
+
+    def _on_elevate(self) -> None:
+        """Re-launch this window raised, then close the current one."""
+        from ..elevate import (
+            ElevationDeclined,
+            ElevationError,
+            elevation_supported,
+            is_elevated,
+            spawn_elevated,
+        )
+
+        if not elevation_supported():
+            self._set_message(
+                "Self-elevation is only available on Windows. Use sudo on Linux.",
+                severity="warn",
+            )
+            return
+        if is_elevated():
+            self._set_message("Already running as administrator.", severity="info")
+            return
+
+        # argv[0] is the script path, so rebuild the "gui <flags>" form explicitly.
+        argv = [sys.argv[0], "gui"]
+        if self.service.store is not None and getattr(self.service.store, "path", None):
+            argv += ["--config", str(self.service.store.path)]
+        if getattr(self.service.control, "name", "") == "mock":
+            argv += ["--backend", "mock"]
+
+        self._set_message("Requesting administrator rights (UAC prompt)...", severity="info")
+        try:
+            spawn_elevated(argv, mode="gui", capture=False, wait=False)
+        except ElevationDeclined as exc:
+            self._set_message(str(exc), severity="warn")
+            return
+        except ElevationError as exc:
+            self._set_message(f"Could not elevate: {exc}", severity="error")
+            return
+
+        # The raised copy owns the controls now; this one steps aside.
+        self._quit()
 
     def _header_text(self) -> str:
         model = self.service.model
@@ -324,27 +458,119 @@ class HelperWindow:
                 pass
 
     def _apply_capabilities(self, caps) -> None:
-        """Disable options the firmware does not support, once we know."""
+        """Disable options the firmware does not support, once we know.
+
+        The old rule was "only touch the buttons when the supported list is
+        non-empty", which meant a machine whose BIOS has **no** thermal attribute
+        at all (an XPS 13 7390 2-in-1) kept every thermal radio button enabled --
+        the list was empty, so nothing was disabled. Clicking one then attempted a
+        write the firmware rejected, surfacing a raw error.
+        """
         if caps is None:
             return
-        if caps.thermal_profiles:
-            for profile, button in self._profile_buttons.items():
-                try:
-                    button.configure(
-                        state="normal" if profile in caps.thermal_profiles else "disabled"
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-        if caps.charge_modes:
-            for mode, button in self._charge_buttons.items():
-                try:
-                    button.configure(
-                        state="normal" if mode in caps.charge_modes else "disabled"
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
+
+        # supports_thermal is False only when the attribute is genuinely absent.
+        # None means "could not tell", where hiding the control would be worse
+        # than leaving it available.
+        if caps.supports_thermal is False:
+            self._disable_group(self._profile_buttons)
+            self._set_profile_hint(
+                "Not available: this BIOS exposes no thermal-profile setting. Use the "
+                "thermal mode buttons below, which drive Dell's ACPI-WMI interface."
+            )
+        elif caps.thermal_profiles:
+            self._enable_only(self._profile_buttons, caps.thermal_profiles)
+
+        if caps.supports_charge is False:
+            self._disable_group(self._charge_buttons)
+            self._apply_charge_button.configure(state="disabled")
+        elif caps.charge_modes:
+            self._enable_only(self._charge_buttons, caps.charge_modes)
+
         for note in caps.notes:
             log.info("capability: %s", note)
+
+    def _disable_group(self, buttons) -> None:
+        for button in buttons.values():
+            try:
+                button.configure(state="disabled")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _enable_only(self, buttons, supported) -> None:
+        for value, button in buttons.items():
+            try:
+                button.configure(state="normal" if value in supported else "disabled")
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _set_profile_hint(self, text: str) -> None:
+        try:
+            self._profile_hint.configure(text=text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _set_thermal_hint(self, text: str) -> None:
+        try:
+            self._thermal_hint.configure(text=text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _disable_thermal_group(self) -> None:
+        for button in self._thermal_buttons.values():
+            try:
+                button.configure(state="disabled")
+            except Exception:  # noqa: BLE001
+                pass
+
+    # -- thermal mode (Dell ACPI-WMI) -------------------------------------
+    def _on_thermal_mode_selected(self) -> None:
+        """Apply a thermal mode, reverting the radio if it fails."""
+        target = self._thermal_var.get()
+        if not target:
+            return
+        self._set_thermal_hint(f"Applying {target}...")
+
+        def done(result, error) -> None:
+            if error is not None:
+                self._set_thermal_hint(f"Could not set {target}: {error}")
+                self._refresh_thermal()
+                return
+            self._apply_thermal_result(result)
+
+        self._run_async(lambda: self.service.set_thermal_mode(target), done)
+
+    def _apply_thermal_result(self, result) -> None:
+        """Refresh the radios from a ThermalTables report."""
+        if result is None:
+            return
+        try:
+            current = result.current_mode_name
+            supported = set(result.supported_modes)
+        except Exception:  # noqa: BLE001
+            return
+        for name, button in self._thermal_buttons.items():
+            try:
+                button.configure(state="normal" if name in supported else "disabled")
+            except Exception:  # noqa: BLE001
+                pass
+        if current:
+            self._thermal_var.set(current)
+        if not supported:
+            self._set_thermal_hint("The firmware reports no thermal modes.")
+        else:
+            self._set_thermal_hint("Available: " + ", ".join(result.supported_modes) + ".")
+
+    def _refresh_thermal(self) -> None:
+        """Read the thermal mode without blocking the UI thread."""
+        def done(result, error) -> None:
+            if error is not None:
+                self._set_thermal_hint(f"Thermal mode unavailable: {error}")
+                self._disable_thermal_group()
+                return
+            self._apply_thermal_result(result)
+
+        self._run_async(self.service.read_thermal_mode, done)
 
     # -- state sync -------------------------------------------------------
     def _sync_from_service(self) -> None:
@@ -383,10 +609,12 @@ class HelperWindow:
     def _apply_status(self, status: SystemStatus) -> None:
         self._status_var.set("\n".join(f"{label}: {value}" for label, value in status_rows(status)))
         self._apply_capabilities(status.capabilities)
+        self._maybe_offer_elevation(status.capabilities)
 
         profile = status.profile
         if profile is not None:
             self._profile_var.set(profile.value)
+        self._active_profile = profile
         charge = status.charge
         if charge is not None:
             self._charge_var.set(charge.mode.value)
@@ -427,8 +655,13 @@ class HelperWindow:
                 result, error = None, exc
             try:
                 self.root.after(0, lambda: self._finish(on_done, result, error))
-            except Exception:  # noqa: BLE001 - window may be gone
-                pass
+            except Exception as exc:  # noqa: BLE001 - window may be gone
+                # Reaching here means the result can never be delivered, so the
+                # busy flag must be cleared by hand -- otherwise the window is
+                # wedged forever, silently refusing every later request with
+                # "Still working on the previous request...".
+                self._busy = False
+                log.warning("could not deliver result to the UI thread: %s", exc)
 
         threading.Thread(target=runner, name="xps-helper-work", daemon=True).start()
 
@@ -444,8 +677,15 @@ class HelperWindow:
             return
         self._refresh_in_flight = True
 
+        # Only the first refresh re-probes the firmware. A probe means enumerating
+        # every BIOS attribute, which on the tested laptop costs about 8 seconds;
+        # repeating that on each periodic tick would leave the window permanently
+        # busy and never settled. Capabilities cannot change while the app is
+        # running anyway.
+        first_probe = self.service.cached_capabilities() is None
+
         def work():
-            return self.service.status()
+            return self.service.status(refresh_caps=first_probe)
 
         def done(result, error) -> None:
             self._refresh_in_flight = False
@@ -462,7 +702,9 @@ class HelperWindow:
             return
         interval_ms = max(1, self.service.settings.refresh_seconds) * 1000
         try:
-            self.root.after(interval_ms, self._refresh_async)
+            # Kept so shutdown can cancel it: a callback still queued when the
+            # window is destroyed raises inside Tk's callback dispatcher.
+            self._refresh_handle = self.root.after(interval_ms, self._refresh_async)
         except Exception:  # noqa: BLE001
             pass
 
@@ -473,13 +715,26 @@ class HelperWindow:
             return
         self._update_hints()
 
+        # A radio button moves the moment it is clicked, before the firmware has
+        # agreed. Remember what was actually active so a refusal can put the
+        # control back, instead of leaving the window claiming a setting that
+        # never took effect.
+        previous = getattr(self, "_active_profile", None)
+
         def work():
             return self.service.set_profile(profile)
 
         def done(result, error) -> None:
             if error is not None:
+                if previous is not None and previous != profile:
+                    try:
+                        self._profile_var.set(previous.value)
+                        self._update_hints()
+                    except Exception:  # noqa: BLE001
+                        pass
                 self._report_error(error)
                 return
+            self._active_profile = profile
             self._set_message(f"Performance set to {profile.label}.", severity="ok")
             if self.tray is not None:
                 self.tray.update_profile(profile)
@@ -659,6 +914,15 @@ class HelperWindow:
         self._closing = True
         if self.tray is not None:
             self.tray.stop()
+        # Cancel the pending refresh first: a queued callback that fires after the
+        # widgets are destroyed prints a traceback from inside Tk.
+        handle = getattr(self, "_refresh_handle", None)
+        if handle is not None:
+            try:
+                self.root.after_cancel(handle)
+            except Exception:  # noqa: BLE001
+                pass
+            self._refresh_handle = None
         try:
             self.root.quit()
             self.root.destroy()
@@ -716,9 +980,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=None, help="Settings file path.")
     parser.add_argument("--no-tray", action="store_true", help="Do not add a tray icon.")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging.")
+    parser.add_argument(
+        "--elevate", action="store_true",
+        help="Re-launch the GUI as administrator (Windows UAC prompt).",
+    )
     args = parser.parse_args(argv)
 
     setup_logging(args.verbose)
+
+    if args.elevate:
+        from ..elevate import (
+            ELEVATE_FLAG,
+            ElevationDeclined,
+            ElevationError,
+            elevation_supported,
+            is_elevated,
+            spawn_elevated,
+        )
+
+        if not elevation_supported():
+            print("error: --elevate is only implemented on Windows.", file=sys.stderr)
+            return 1
+        if is_elevated():
+            print(f"note: already running elevated, ignoring {ELEVATE_FLAG}.", file=sys.stderr)
+        else:
+            raw = [sys.argv[0], *[a for a in (argv or sys.argv[1:]) if a != ELEVATE_FLAG]]
+            print("Requesting administrator rights (a UAC prompt will appear)...", file=sys.stderr)
+            try:
+                spawn_elevated(raw, mode="gui", capture=False, wait=False)
+            except ElevationDeclined as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            except ElevationError as exc:
+                print(f"error: could not elevate: {exc}", file=sys.stderr)
+                return 1
+            return 0
+
     store = ConfigStore(args.config) if args.config else None
     try:
         service = make_service(args.backend, store=store)

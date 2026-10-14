@@ -270,11 +270,13 @@ class CctkBackend:
         caps.thermal_profiles = self._resolve_values(
             C.ATTR_THERMAL, ThermalProfile, "thermal modes", notes
         )
+        caps.supports_thermal = self._attribute_exists(C.ATTR_THERMAL)
 
         # Battery charge modes -------------------------------------------
         caps.charge_modes = self._resolve_values(
             C.ATTR_PRIMARY_BATT, ChargeMode, "charge modes", notes
         )
+        caps.supports_charge = self._attribute_exists(C.ATTR_PRIMARY_BATT)
 
         # Advanced charge schedule ---------------------------------------
         adv_values, _ = self.supported_values(C.ATTR_ADV_BATT)
@@ -282,6 +284,22 @@ class CctkBackend:
 
         self._capability_cache = caps
         return caps
+
+    def _attribute_exists(self, attribute: str) -> bool | None:
+        """Whether cctk describes this attribute at all.
+
+        ``None`` means "could not tell", which the UI must treat as fail-open: an
+        unreadable help text is a parser problem, not evidence that the machine
+        lacks the feature.
+        """
+        try:
+            _values, raw = self.supported_values(attribute)
+        except Exception:  # noqa: BLE001 - a probe must not be fatal
+            return None
+        text = (raw or "").strip()
+        if not text:
+            return False
+        return True
 
     def _resolve_values(self, attribute, enum_cls, description, notes) -> tuple:
         """Work out which of an attribute's values this model accepts.

@@ -22,6 +22,15 @@ from typing import Any, Sequence
 
 from . import constants as C
 from .doctor import run_doctor
+from .elevate import (
+    ELEVATE_FLAG,
+    ElevationDeclined,
+    ElevationError,
+    describe as describe_elevation,
+    elevation_supported,
+    is_elevated,
+    spawn_elevated,
+)
 from .errors import (
     BiosPasswordInvalid,
     BiosPasswordRequired,
@@ -122,6 +131,19 @@ def _render_profiles(service: XpsHelper, current: ThermalProfile | None) -> str:
     caps = service.capabilities()
     supported = caps.thermal_profiles
     lines = ["Thermal profiles:"]
+
+    if caps.supports_thermal is False:
+        # The attribute does not exist, so nothing here can be set. Saying so once
+        # is clearer than marking four rows unsupported without explanation.
+        for profile in ThermalProfile:
+            lines.append(f"  - {profile.value:<17} {profile.label}")
+        lines.append("")
+        lines.append(
+            "  None of these can be set: this BIOS exposes no thermal-profile "
+            "attribute.\n  Battery charge control is unaffected -- see 'charge --list'."
+        )
+        return "\n".join(lines)
+
     for profile in ThermalProfile:
         available = profile in supported if supported else True
         if not available:
@@ -215,6 +237,45 @@ def _cmd_profile(args: argparse.Namespace, service: XpsHelper) -> int:
         print(f"Thermal profile set to {applied.label}.")
         if applied.caps_cpu_power:
             print("Note: this profile caps sustained CPU power (~11 W on XPS 13).")
+    return EXIT_OK
+
+
+def _cmd_thermal(args: argparse.Namespace, service: XpsHelper) -> int:
+    """Read or set the thermal mode over Dell's ACPI-WMI interface.
+
+    This is the separate interface Dell Power Manager uses on models with no
+    ``ThermalManagement`` BIOS attribute, and the only way to change the performance
+    mode on them.
+    """
+    from . import thermal as thermal_mod
+
+    try:
+        if args.mode:
+            tables = service.set_thermal_mode(args.mode)
+            if args.json:
+                _print_json(tables.as_dict())
+            else:
+                name = tables.current_mode_name or tables.current_mode
+                print(f"Thermal mode applied: {name}.")
+            return EXIT_OK
+        tables = service.read_thermal_mode()
+    except thermal_mod.ThermalError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except XpsHelperError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.json:
+        _print_json(tables.as_dict())
+    else:
+        current = tables.current_mode_name
+        print(f"Current thermal mode : {current}" if current else
+              f"Current thermal mode : {tables.current_mode} (unrecognised)")
+        available = ", ".join(tables.supported_modes) or "none reported"
+        print(f"Available            : {available}")
+        if tables.fan_failure:
+            print(f"Fan failure          : {tables.fan_failure}")
     return EXIT_OK
 
 
@@ -314,6 +375,104 @@ def _cmd_gui(args: argparse.Namespace, service: XpsHelper) -> int:
     return run_gui(service, use_tray=not args.no_tray)
 
 
+def _cmd_helper(args: argparse.Namespace, service: XpsHelper) -> int:
+    """Manage the privileged helper that removes the per-use UAC prompt."""
+    from . import privileged as priv
+    from .elevate import elevation_supported
+
+    if args.uninstall:
+        if not priv.is_installed():
+            print("No privileged helper is installed.")
+            return EXIT_OK
+        output = priv.run_elevated_once(priv.uninstall_script())
+        print(output.strip() or "Privileged helper removed.")
+        return EXIT_OK
+
+    if args.install:
+        if not elevation_supported():
+            print("error: the privileged helper is Windows-only.", file=sys.stderr)
+            return EXIT_ERROR
+        if priv.is_installed() and not args.force:
+            print(
+                "The privileged helper is already installed. Re-run with --force to "
+                "replace it."
+            )
+            return EXIT_OK
+        print(
+            "Installing the privileged helper. This is the ONE time a UAC prompt is "
+            "needed; after this, privileged actions run without prompting.",
+            file=sys.stderr,
+        )
+        try:
+            output = priv.run_elevated_once(priv.install_script())
+        except priv.HelperError as exc:
+            # Say why. Printing a bare "installed: False" was actively misleading:
+            # it looked like a silent failure when in fact the UAC prompt had been
+            # dismissed or the script had errored.
+            print(f"error: {exc}", file=sys.stderr)
+            return EXIT_ERROR
+        if output.strip():
+            print(output.strip())
+        installed = priv.is_installed()
+        if not installed:
+            print(
+                "error: the install script reported success but no task was "
+                "registered. Run with -v for details.",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
+        print("installed: True")
+        print(
+            "Privileged actions now run without a UAC prompt. "
+            "Remove it any time with 'xps-helper helper --uninstall'."
+        )
+        return EXIT_OK
+
+    # Status.
+    state = priv.describe()
+    if args.json:
+        _print_json(state)
+    else:
+        print(f"privileged helper : {'installed' if state['installed'] else 'not installed'}")
+        print(f"task name         : {state['task_name']}")
+        print(f"action            : {' '.join(state['command'])}")
+        print(f"note              : {state['note']}")
+    return EXIT_OK
+
+
+def _cmd_privileged_run(args: argparse.Namespace, service: XpsHelper) -> int:
+    """Run an arbitrary command through the installed privileged helper.
+
+    A general escape hatch, and the reason it exists: some diagnostics need
+    elevation to read at all (Dell's ACPI-WMI classes return "Access denied"
+    otherwise), and re-launching elevated per probe means a UAC prompt every time.
+    Going through the helper keeps that to the single install prompt.
+    """
+    from . import privileged as priv
+
+    command = list(args.command_args or [])
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        print("error: give a command after '--'.", file=sys.stderr)
+        return EXIT_USAGE
+
+    try:
+        result = priv.run_via_helper(command)
+    except priv.HelperNotInstalled as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except priv.HelperError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+    return EXIT_OK if result.ok else EXIT_ERROR
+
+
 def _cmd_diagnose_wmi(args: argparse.Namespace, service: XpsHelper) -> int:
     """Deep WMI diagnosis: which Dell interfaces exist, and why one failed."""
     from .backends.wmi_diagnose import render as render_diagnosis
@@ -329,8 +488,23 @@ def _cmd_diagnose_wmi(args: argparse.Namespace, service: XpsHelper) -> int:
 
 def _cmd_capabilities(args: argparse.Namespace, service: XpsHelper) -> int:
     caps = service.capabilities(refresh=True)
+
+    # Dell's second thermal interface, if any. This is the one that matters on
+    # models with no ThermalManagement BIOS attribute.
+    thermal_caps = None
+    try:
+        from . import thermal
+
+        thermal_caps = thermal.probe()
+    except Exception as exc:  # noqa: BLE001 - a probe must not break the command
+        log.debug("thermal capability probe failed: %s", exc)
+
     if args.json:
-        _print_json(caps.to_dict())
+        payload = caps.to_dict()
+        payload["dell_thermal_interface"] = (
+            thermal_caps.to_dict() if thermal_caps is not None else None
+        )
+        _print_json(payload)
     else:
         print(f"control backend   : {caps.control_backend}")
         print(f"telemetry backend : {caps.telemetry_backend}")
@@ -340,6 +514,19 @@ def _cmd_capabilities(args: argparse.Namespace, service: XpsHelper) -> int:
         print(f"advanced schedule : {'yes' if caps.supports_advanced_schedule else 'no'}")
         print(f"battery / temps / fans : {caps.battery_readable} / "
               f"{caps.temperatures_readable} / {caps.fans_readable}")
+        if thermal_caps is not None:
+            state = {
+                True: "present",
+                False: "absent",
+                None: "unknown",
+            }.get(thermal_caps.acpi_wmi_supported, "unknown")
+            classes = ", ".join(
+                f"DA_CLASS_{c:02d}" for c in thermal_caps.supported_da_classes
+            )
+            print(f"Dell thermal iface: {state}"
+                  + (f" ({classes})" if classes else ""))
+            print("                    (what Dell Power Manager uses; XPS Helper "
+                  "does not write it yet)")
         for note in caps.notes:
             print(f"note: {note}")
     return EXIT_OK
@@ -382,6 +569,15 @@ def _make_common(*, suppressed: bool) -> argparse.ArgumentParser:
         action="store_true",
         default=argparse.SUPPRESS if suppressed else False,
         help="Enable debug logging.",
+    )
+    parser.add_argument(
+        ELEVATE_FLAG,
+        action="store_true",
+        default=argparse.SUPPRESS if suppressed else False,
+        help=(
+            "Re-run this command as administrator (Windows UAC prompt). Needed to "
+            "*change* BIOS settings; not needed for 'status'."
+        ),
     )
     return parser
 
@@ -448,6 +644,17 @@ def build_parser() -> argparse.ArgumentParser:
     charge.add_argument("--no-verify", action="store_true", help="Skip read-back verification.")
     charge.set_defaults(func=_cmd_charge)
 
+    thermal = subparsers.add_parser(
+        "thermal", parents=[_make_common(suppressed=True)],
+        help="Read or set the performance mode via Dell's ACPI-WMI interface.",
+    )
+    thermal.add_argument(
+        "mode", nargs="?",
+        help="Thermal mode to apply: Balanced, Cool, Quiet or Ultra. Omit to read.",
+    )
+    thermal.add_argument("--json", action="store_true", help="Emit JSON.")
+    thermal.set_defaults(func=_cmd_thermal)
+
     doctor = subparsers.add_parser(
         "doctor", parents=[_make_common(suppressed=True)],
         help="Diagnose which features work on this machine (run this first).",
@@ -503,11 +710,34 @@ def build_parser() -> argparse.ArgumentParser:
     gui.add_argument("--no-tray", action="store_true", help="Do not add a tray icon.")
     gui.set_defaults(func=_cmd_gui)
 
+    helper = subparsers.add_parser(
+        "helper", parents=[_make_common(suppressed=True)],
+        help="Install/remove the privileged helper that avoids a UAC prompt per use.",
+    )
+    helper.add_argument("--install", action="store_true", help="Register the helper (one UAC prompt).")
+    helper.add_argument("--uninstall", action="store_true", help="Remove the helper.")
+    helper.add_argument("--force", action="store_true", help="Replace an existing helper.")
+    helper.add_argument("--json", action="store_true", help="Emit JSON status.")
+    helper.set_defaults(func=_cmd_helper)
+
+    priv_run = subparsers.add_parser(
+        "privileged-run", parents=[_make_common(suppressed=True)],
+        help="Run a command through the privileged helper (no UAC prompt).",
+    )
+    priv_run.add_argument(
+        "command_args", nargs=argparse.REMAINDER,
+        help="Command to run, e.g. privileged-run -- python -c \"print(1)\"",
+    )
+    priv_run.set_defaults(func=_cmd_privileged_run)
+
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
+    # Remember the vector before parsing: --elevate has to re-run this exact
+    # command, and argparse does not preserve ordering or spelling.
+    raw_argv = list(sys.argv) if argv is None else [C.APP_NAME, *argv]
     args = parser.parse_args(argv)
     setup_logging(getattr(args, "verbose", False))
 
@@ -515,6 +745,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return EXIT_USAGE
 
+    if getattr(args, "elevate", False):
+        return _reexec_elevated(raw_argv)
+
+    return _dispatch(args)
+
+
+def _dispatch(args: argparse.Namespace) -> int:
+    """Build the service and run the chosen command, mapping errors to codes."""
     store = ConfigStore(args.config) if getattr(args, "config", None) else None
     try:
         service = make_service(getattr(args, "backend", "auto"), store=store)
@@ -535,6 +773,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_ERROR
     except KeyboardInterrupt:
         return EXIT_OK
+
+
+def _reexec_elevated(raw_argv: Sequence[str]) -> int:
+    """Re-run this command with administrator rights, forwarding its exit code."""
+    if not elevation_supported():
+        print("error: --elevate is only implemented on Windows.", file=sys.stderr)
+        return EXIT_ERROR
+    if is_elevated():
+        # Already there; the flag is a no-op rather than a nested UAC prompt.
+        print(f"note: already running elevated, ignoring {ELEVATE_FLAG}.", file=sys.stderr)
+        return EXIT_OK
+
+    print("Requesting administrator rights (a UAC prompt will appear)...", file=sys.stderr)
+    try:
+        return spawn_elevated(raw_argv, mode="console")
+    except ElevationDeclined as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    except ElevationError as exc:
+        print(f"error: could not elevate: {exc}", file=sys.stderr)
+        print(f"Try: {describe_elevation(raw_argv)}", file=sys.stderr)
+        return EXIT_ERROR
 
 
 if __name__ == "__main__":  # pragma: no cover

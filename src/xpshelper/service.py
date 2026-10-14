@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -162,6 +163,15 @@ class ConfigStore:
             raise XpsHelperError(f"Could not save settings: {exc}") from exc
 
 
+def _package_root() -> Path:
+    """The ``src`` directory holding the ``xpshelper`` package.
+
+    The privileged child runs with a different working directory, so the thermal
+    snippet has to be told where to import the package from explicitly.
+    """
+    return Path(__file__).resolve().parent.parent
+
+
 class XpsHelper:
     """High-level facade used by both the CLI and the GUI."""
 
@@ -250,7 +260,18 @@ class XpsHelper:
         target = self._resolve_profile(profile)
         self._ensure_controllable()
 
-        supported = self.capabilities().thermal_profiles
+        caps = self.capabilities()
+        if caps.supports_thermal is False:
+            # The attribute does not exist, so this cannot succeed. Say why in
+            # terms the user can act on rather than passing on a raw firmware
+            # error for a setting this model does not have.
+            raise ValidationError(
+                "This BIOS exposes no thermal-profile setting, so the performance "
+                "mode cannot be changed on this model. Battery charge control is "
+                "unaffected."
+            )
+
+        supported = caps.thermal_profiles
         if supported and target not in supported:
             options = ", ".join(p.label for p in supported)
             raise ValidationError(
@@ -267,6 +288,79 @@ class XpsHelper:
         log.info("thermal profile set to %s", target.value)
         return target
 
+    # -- Dell ACPI-WMI thermal modes --------------------------------------
+    #
+    # A second, separate thermal interface. On models with no ThermalManagement
+    # BIOS attribute (this XPS 13 7390 2-in-1 among them) this is the one Dell
+    # Power Manager itself uses, so it is the only way to change the performance
+    # mode. It needs elevation, which the privileged helper supplies without a
+    # prompt.
+    def read_thermal_mode(self) -> "thermal.ThermalTables":
+        """Read the firmware's thermal tables over Dell's ACPI-WMI interface."""
+        from . import privileged as priv
+        from . import thermal as thermal_mod
+
+        if priv.is_installed() and not priv.is_privileged_child():
+            return self._thermal_via_helper(read_only=True)
+        return thermal_mod.read_thermal_mode()
+
+    def set_thermal_mode(self, mode: str | int) -> "thermal.ThermalTables":
+        """Set the thermal mode over Dell's ACPI-WMI interface, then verify."""
+        from . import privileged as priv
+        from . import thermal as thermal_mod
+
+        if priv.is_installed() and not priv.is_privileged_child():
+            return self._thermal_via_helper(mode=mode)
+        return thermal_mod.set_thermal_mode(mode)
+
+    def _thermal_via_helper(
+        self, *, mode: str | int | None = None, read_only: bool = False
+    ) -> "thermal.ThermalTables":
+        """Run the thermal operation through the no-prompt privileged helper."""
+        import json as _json
+
+        from . import privileged as priv
+        from . import thermal as thermal_mod
+
+        if read_only:
+            expression = "print(json.dumps(thermal.read_thermal_mode().as_dict()))"
+        else:
+            expression = (
+                "print(json.dumps(thermal.set_thermal_mode("
+                f"{mode!r}).as_dict()))"
+            )
+        code = (
+            "import json, sys; "
+            f"sys.path.insert(0, {str(_package_root())!r}); "
+            "from xpshelper import thermal; " + expression
+        )
+        result = priv.run_via_helper([sys.executable, "-c", code])
+        if not result.ok:
+            from .errors import XpsHelperError
+
+            raise XpsHelperError(
+                "the privileged helper could not reach the thermal interface: "
+                + (result.stderr or result.stdout or "no output").strip()
+            )
+        payload = None
+        for line in reversed((result.stdout or "").splitlines()):
+            if line.lstrip().startswith("{"):
+                payload = line
+                break
+        if payload is None:
+            from .errors import XpsHelperError
+
+            raise XpsHelperError("the thermal helper returned no result")
+        # as_dict() also carries derived names (supported_modes, current_mode_name),
+        # which are properties rather than constructor fields.
+        raw = _json.loads(payload)
+        return thermal_mod.ThermalTables(
+            error=raw.get("error"),
+            supported_mask=raw.get("supported_mask", 0),
+            current_mode=raw.get("current_mode", 0),
+            fan_failure=raw.get("fan_failure", 0),
+        )
+
     def set_charge(
         self,
         config: ChargeConfig | ChargeMode | str,
@@ -280,7 +374,30 @@ class XpsHelper:
         target = self._resolve_charge(config, start=start, stop=stop)
         self._ensure_controllable()
 
-        supported = self.capabilities().charge_modes
+        # Delegate FIRST when a privileged helper is installed.
+        #
+        # Order matters and this was a real bug: the capability check below reads
+        # the firmware, and an unelevated process is refused ("this BIOS exposes no
+        # battery charge configuration attribute"), so the write aborted before it
+        # ever reached the helper that exists precisely to do it elevated. The
+        # helper runs elevated, so it performs both the check and the write.
+        if self._via_privileged_helper("charge", target):
+            if persist:
+                self.settings.charge_mode = target.mode.value
+                self.settings.charge_start = target.start
+                self.settings.charge_stop = target.stop
+                self.store.save(self.settings)
+            log.info("charge configuration set to %s (via helper)", target.token)
+            return target
+
+        caps = self.capabilities()
+        if caps.supports_charge is False:
+            raise ValidationError(
+                "This BIOS exposes no battery charge configuration attribute, so the "
+                "charge setting cannot be changed on this model."
+            )
+
+        supported = caps.charge_modes
         if supported and target.mode not in supported:
             options = ", ".join(m.label for m in supported)
             raise ValidationError(
@@ -299,7 +416,69 @@ class XpsHelper:
         log.info("charge configuration set to %s", target.token)
         return target
 
+    def _via_privileged_helper(self, kind: str, target: Any) -> bool:
+        """Do a write through the installed privileged helper, if there is one.
+
+        Returns True when the helper performed the write, False when the caller
+        should do it in-process.
+
+        Why this exists: writing a BIOS setting needs administrator rights, and
+        re-launching elevated per action shows a UAC prompt every time. When the
+        helper is installed, the write is delegated to an already-elevated
+        Scheduled Task, so no prompt appears. When it is not installed, nothing
+        changes -- the caller does the write the old way and the usual elevation
+        rules apply.
+        """
+        from . import privileged as priv
+        from .elevate import is_elevated
+
+        # Recursion guard, first and unconditionally.
+        #
+        # This process may be the privileged child the helper started. If it asked
+        # for a helper again, the chain would never terminate: each child would
+        # start another task, hang, and eventually time out with no useful error.
+        # Checking an explicit marker cannot be wrong, whereas relying on an
+        # elevation *check* can be -- a failed token query reads as "not elevated".
+        if priv.is_privileged_child():
+            return False
+
+        # Already privileged: no point paying for a helper round trip.
+        if is_elevated():
+            return False
+        try:
+            if not priv.is_installed():
+                return False
+        except Exception:  # noqa: BLE001 - never let this break a write
+            return False
+
+        import sys as _sys
+
+        if kind == "charge":
+            cli = [
+                _sys.executable,
+                "-m",
+                "xpshelper",
+                "charge",
+                str(target.mode.value),
+            ]
+            if target.start is not None and target.stop is not None:
+                cli += ["--start", str(target.start), "--stop", str(target.stop)]
+        else:  # pragma: no cover - profiles cannot use this path yet
+            return False
+
+        # Do not persist twice: the child applies the same command.
+        cli.append("--no-verify")
+        result = priv.run_via_helper(cli)
+        if not result.ok:
+            raise XpsHelperError(
+                "The privileged helper could not change the setting: "
+                f"{(result.stderr or result.stdout or '').strip()[:300]}"
+            )
+        log.info("charge configuration applied via the privileged helper")
+        return True
+
     def _verify_profile(self, target: ThermalProfile) -> None:
+        """Read the profile back and complain if the firmware did not honour it."""
         try:
             actual = self.control.read_profile()
         except Exception as exc:  # noqa: BLE001 - readback is best-effort

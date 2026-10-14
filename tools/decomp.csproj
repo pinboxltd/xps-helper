@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Focused IL reader used to reverse-engineer Dell's managed assemblies.
+       Usage: dotnet run [assembly.dll] [types | name-filter] -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net7.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ilreader</AssemblyName>
+    <NoWarn>CS0168;CS0219;CS8321</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Reflection.Metadata" Version="7.0.0" />
+  </ItemGroup>
+</Project>

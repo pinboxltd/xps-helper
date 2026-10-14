@@ -163,19 +163,32 @@ class LinuxSysmanBackend:
 
         thermal = self.find_attribute_dir(THERMAL_ATTRIBUTE_CANDIDATES)
         if thermal is not None:
+            caps.supports_thermal = True
             values = parse_possible_values(_read_text(thermal / "possible_values"))
             caps.thermal_profiles = (
                 parse_profile_list(values) if values else tuple(ThermalProfile)
             )
             if not values:
                 caps.notes.append("ThermalManagement reports no possible_values.")
+        else:
+            caps.supports_thermal = False
+            caps.notes.append(
+                "The kernel does not expose a ThermalManagement attribute, so thermal "
+                "profiles cannot be changed on this machine."
+            )
 
         charge = self.find_attribute_dir(CHARGE_ATTRIBUTE_CANDIDATES)
         if charge is not None:
+            caps.supports_charge = True
             values = parse_possible_values(_read_text(charge / "possible_values"))
             caps.charge_modes = parse_charge_mode_list(values) if values else tuple(ChargeMode)
             if not values:
                 caps.notes.append("The charge attribute reports no possible_values.")
+        else:
+            caps.supports_charge = False
+            caps.notes.append(
+                "The kernel does not expose a battery charge configuration attribute."
+            )
 
         caps.supports_advanced_schedule = ADV_CHARGE_ATTRIBUTE in self.attributes
         return caps

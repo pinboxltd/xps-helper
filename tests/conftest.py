@@ -43,6 +43,28 @@ def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         handler.close()
     logsetup._CONFIGURED = False
 
+
+@pytest.fixture(autouse=True)
+def no_privileged_helper(monkeypatch: pytest.MonkeyPatch):
+    """Pretend no privileged helper is installed, for every test.
+
+    Once the helper is installed on the developer's machine, charge writes are
+    routed to it, which silently bypasses the in-process validation and firmware
+    error paths many tests exist to check. Those tests then fail for an
+    environmental reason rather than a real one.
+
+    Tests that exercise the helper itself re-patch these, so this only establishes
+    a deterministic default.
+    """
+    from xpshelper import privileged
+
+    monkeypatch.setattr(
+        privileged, "is_installed", lambda task_name=privileged.TASK_NAME: False
+    )
+    monkeypatch.delenv(privileged.ENV_PRIVILEGED_CHILD, raising=False)
+    yield
+
+
 # ---------------------------------------------------------------------------
 # Realistic cctk help text. Format taken from the hardware-tested
 # dell-powermanager parser: an "Arguments:" line, values separated by "|",

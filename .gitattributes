@@ -1,0 +1,16 @@
+# Normalise line endings. Without this, Windows checkout converts LF to CRLF and
+# every text file shows as modified on the next commit.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF so they behave in cmd.exe and PowerShell.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary: never touch, never diff.
+*.png binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.pdb binary
+*.zip binary

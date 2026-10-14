@@ -317,12 +317,27 @@ class Capabilities:
 
     Built by probing, never assumed: the same XPS 13 model can differ by BIOS
     version, and cctk reports per-model supported values.
+
+    ``supports_thermal`` / ``supports_charge`` exist to separate two situations
+    that an empty value list cannot tell apart:
+
+    * the firmware has **no such attribute at all** -- the feature is impossible
+      here, and the UI must disable it; and
+    * the attribute **exists but did not report its allowed values** -- the
+      feature probably works, and hiding it would be the worse mistake.
+
+    Collapsing these into "no values found means show everything" is how the GUI
+    ended up offering a thermal profile on a laptop whose BIOS has no thermal
+    attribute, then failing with a raw firmware error when it was clicked.
     """
 
     control_backend: str = "none"
     telemetry_backend: str = "none"
     thermal_profiles: tuple[ThermalProfile, ...] = ()
     charge_modes: tuple[ChargeMode, ...] = ()
+    #: None = not determined, True/False = the attribute is present/absent.
+    supports_thermal: bool | None = None
+    supports_charge: bool | None = None
     supports_advanced_schedule: bool = False
     battery_readable: bool = False
     temperatures_readable: bool = False
@@ -344,6 +359,8 @@ class Capabilities:
             "telemetry_backend": self.telemetry_backend,
             "thermal_profiles": [p.value for p in self.thermal_profiles],
             "charge_modes": [m.value for m in self.charge_modes],
+            "supports_thermal": self.supports_thermal,
+            "supports_charge": self.supports_charge,
             "supports_custom_thresholds": self.supports_custom_thresholds,
             "supports_advanced_schedule": self.supports_advanced_schedule,
             "battery_readable": self.battery_readable,

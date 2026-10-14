@@ -1,0 +1,39 @@
+﻿XPS Helper hardware verification
+==================================================================
+elevated : True
+user     : desktop-595aum3\stark-laptop
+model    : Dell Inc. XPS 13 7390 2-in-1
+BIOS     : 1.35.0
+
+--- 1. interface presence ---
+namespace root\dcim\sysman children: biosattributes, wmisecurity
+BIOSAttributeInterface reachable via cim
+
+--- 2. attributes this BIOS exposes ---
+EnumerationAttribute: 92   IntegerAttribute: 9   StringAttribute: 2
+
+attributes XPS Helper uses:
+  ThermalManagement        NOT PRESENT on this model
+  PrimaryBattChargeCfg     = Standard       possible: Adaptive, Standard, Express, PrimAcUse, Custom
+  CustomChargeStart        = 60             possible: 
+  CustomChargeStop         = 80             possible: 
+  AdvBatteryChargeCfg      = Disabled       possible: Disabled, Enabled
+
+--- 3. wmisecurity ---
+  Admin      IsPasswordSet=0
+  System     IsPasswordSet=0
+             IsPasswordSet=0
+
+--- 4. write path (rewriting each current value to itself) ---
+    A rewrite-to-same-value cannot change machine behaviour.
+
+  PrimaryBattChargeCfg     = Standard       -> Status 0 (Success)
+  CustomChargeStart        = 60             -> Status 0 (Success)
+  CustomChargeStop         = 80             -> Status 0 (Success)
+  ThermalManagement        skipped (not present)
+
+--- summary ---
+thermal profiles : NOT available on this model (no ThermalManagement attribute)
+charge modes     : Adaptive, Standard, Express, PrimAcUse, Custom
+
+Report complete.

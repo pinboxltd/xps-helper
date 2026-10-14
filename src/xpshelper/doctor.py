@@ -121,6 +121,22 @@ def _wrap(text: str, width: int) -> list[str]:
     return lines or [""]
 
 
+def _as_errors(data: dict[str, Any]) -> list[str]:
+    """Normalise the refresh payload's error field into a clean list of strings.
+
+    PowerShell collapses a one-element array to a bare string, so the field can
+    arrive as either shape.
+    """
+    raw = data.get("errors")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw.strip()] if raw.strip() else []
+    if isinstance(raw, (list, tuple)):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return [str(raw)]
+
+
 def run_doctor(service: XpsHelper, *, include_raw: bool = True) -> DoctorReport:
     report = DoctorReport()
 
@@ -205,23 +221,40 @@ def run_doctor(service: XpsHelper, *, include_raw: bool = True) -> DoctorReport:
 
     if selected is not None and hasattr(selected, "is_elevated"):
         elevated = selected.is_elevated()
-        report.add(
-            "Privileges",
-            OK if elevated else WARN,
-            "Running elevated." if elevated
-            else "Not elevated. Reading works, but *writing* BIOS settings needs "
-                 "administrator rights (or sudo on Linux).",
-        )
+        denied = bool(getattr(selected, "access_denied", lambda: False)())
+        if elevated:
+            privileges = "Running elevated. BIOS writes are permitted."
+        elif denied:
+            privileges = (
+                "Not elevated, and the BIOS interface is refusing access because of "
+                "it. Run 'xps-helper --elevate <command>' (or the GUI, which offers "
+                "to elevate) to actually change settings. Reads of battery and "
+                "sensors work without it."
+            )
+        else:
+            privileges = (
+                "Not elevated. Reading works, but *writing* BIOS settings needs "
+                "administrator rights (or sudo on Linux)."
+            )
+        report.add("Privileges", OK if elevated else WARN, privileges)
 
     # Reading the current values also proves the read path round-trips.
     if caps.can_control:
         try:
             profile = control.read_profile()
-            report.add(
-                "Current thermal profile",
-                OK if profile else WARN,
-                profile.label if profile else "Could not read the current thermal profile.",
-            )
+            if profile is not None:
+                report.add("Current thermal profile", OK, profile.label)
+            elif caps.thermal_profiles:
+                report.add(
+                    "Current thermal profile", WARN,
+                    "The BIOS exposes ThermalManagement but its value could not be read.",
+                )
+            else:
+                report.add(
+                    "Current thermal profile", INFO,
+                    "Not applicable: this model does not expose a thermal-profile "
+                    "attribute.",
+                )
         except Exception as exc:  # noqa: BLE001
             report.add("Current thermal profile", WARN, f"Could not read it: {exc}")
         try:
@@ -302,6 +335,12 @@ def run_doctor(service: XpsHelper, *, include_raw: bool = True) -> DoctorReport:
             "everything else still works.",
         )
 
+    # -- Dell's second thermal interface -----------------------------------
+    # Worth reporting separately from the BIOS-attribute path, because on models
+    # where ThermalManagement is absent this is the interface Dell Power Manager
+    # actually uses. It is probed read-only; writes are gated (see thermal.py).
+    report.add(*_thermal_interface_check())
+
     # -- verdict ----------------------------------------------------------
     notes = caps.notes
     if notes:
@@ -310,12 +349,28 @@ def run_doctor(service: XpsHelper, *, include_raw: bool = True) -> DoctorReport:
     if service.capabilities().can_control:
         report.add("Verdict", OK, "Thermal and/or charge control is available.")
     else:
-        report.add(
-            "Verdict",
-            FAIL,
-            "Control is unavailable. Install Dell Command | Configure and run the app "
-            "as administrator. Monitoring still works.",
+        names = {getattr(check, "name", "") for check in report.checks}  # noqa: F841
+        denied = any(
+            "denied access" in (check.detail or "")
+            for check in report.checks
+            if check.name == "Native BIOS interface (WMI-ACPI)"
         )
+        if denied:
+            report.add(
+                "Verdict",
+                FAIL,
+                "Control is unavailable *only because the app is not elevated*. "
+                "The firmware interface is present. Re-run as administrator "
+                "(try 'xps-helper --elevate doctor'), or use the GUI, which offers "
+                "to elevate itself. Monitoring already works.",
+            )
+        else:
+            report.add(
+                "Verdict",
+                FAIL,
+                "Control is unavailable on this machine. Monitoring still works. "
+                "Run 'xps-helper diagnose-wmi' for the raw firmware report.",
+            )
 
     return report
 
@@ -325,26 +380,43 @@ def _doctor_wmi_bios(report: DoctorReport, backend: "WmiBiosBackend", include_ra
     data = backend.refresh()
 
     if not data.get("interface_found"):
+        # Distinguish "we are not allowed in" from "it is not there". Conflating
+        # these sends people hunting for a BIOS setting when the actual fix is to
+        # run the command elevated, so the two get different statuses and
+        # different wording.
+        if backend.access_denied():
+            report.add(
+                "Native BIOS interface (WMI-ACPI)",
+                FAIL,
+                f"{C.WMI_BIOS_INTERFACE_CLASS} is present in {C.WMI_BIOS_NAMESPACE}, "
+                "but Windows denied access to it. This is a permissions problem, "
+                "not a missing feature: re-run XPS Helper as administrator. "
+                "The GUI offers to elevate itself. "
+                "Raw: " + " | ".join(_as_errors(data)),
+            )
+            return
+
         message = (
             f"The BIOS did not expose {C.WMI_BIOS_INTERFACE_CLASS} in "
             f"{C.WMI_BIOS_NAMESPACE}. Either this model predates WMI-ACPI support, "
             "or the interface is disabled in BIOS setup."
         )
-        if data.get("error"):
-            message += f" BIOS said: {data['error']}"
-            lowered = str(data["error"]).lower()
-            if any(word in lowered for word in ("access", "denied", "privilege", "elevat")):
-                message += (
-                    " That message points at permissions rather than a missing "
-                    "interface: re-run this command as administrator."
-                )
+        errors = _as_errors(data)
+        if errors:
+            message += " BIOS said: " + " | ".join(errors)
+        if data.get("namespace_exists"):
+            message += (
+                f" ({C.WMI_BIOS_NAMESPACE} does exist, so the namespace is present "
+                "but the interface class is not readable.)"
+            )
         report.add("Native BIOS interface (WMI-ACPI)", FAIL, message)
         return
 
     report.add(
         "Native BIOS interface (WMI-ACPI)",
         OK,
-        f"Found {C.WMI_BIOS_INTERFACE_CLASS} in {C.WMI_BIOS_NAMESPACE}. "
+        f"Found {C.WMI_BIOS_INTERFACE_CLASS} in {C.WMI_BIOS_NAMESPACE} via the "
+        f"{str(data.get('api') or 'unknown').upper()} provider. "
         "No Dell software is required for this path.",
     )
 
@@ -367,15 +439,23 @@ def _doctor_wmi_bios(report: DoctorReport, backend: "WmiBiosBackend", include_ra
             "The interface exists but none of the expected attributes were returned.",
         )
 
-    for title, candidates in (
-        ("Thermal profiles", THERMAL_ATTRIBUTE_CANDIDATES),
-        ("Charge modes", CHARGE_ATTRIBUTE_CANDIDATES),
+    for title, candidates, kind in (
+        ("Thermal profiles", THERMAL_ATTRIBUTE_CANDIDATES, ThermalProfile),
+        ("Charge modes", CHARGE_ATTRIBUTE_CANDIDATES, ChargeMode),
     ):
         entry = find_attribute(entries, candidates)
         if entry is None:
-            report.add(title, WARN, "This BIOS does not expose the expected attribute.")
+            # Not a failure of the app: this model simply does not have the
+            # attribute. Say which attribute and what it means for the user.
+            report.add(
+                title,
+                INFO,
+                f"This BIOS does not list {candidates[0]} among its attributes, so "
+                f"{title.lower()} cannot be changed on this model. That is a "
+                "firmware limitation, not a configuration problem.",
+            )
             continue
-        values = possible_values(entry)
+        values = possible_values(entry, entries)
         detail = (
             f"{entry.get('AttributeName')}: supported = "
             f"{', '.join(values) if values else 'not reported'}"
@@ -390,6 +470,64 @@ def _doctor_wmi_bios(report: DoctorReport, backend: "WmiBiosBackend", include_ra
             report.raw_sections[f"{entry.get('AttributeName')} raw"] = json.dumps(
                 entry, indent=2, default=str
             )
+
+
+def _thermal_interface_check() -> tuple[str, str, str]:
+    """Report on Dell's non-BIOS-attribute thermal interface.
+
+    On an XPS 13 7390 2-in-1 the BIOS-attribute interface has no
+    ``ThermalManagement`` attribute, yet Dell Power Manager changes the thermal
+    mode. It uses a separate transport (``root\\wmi :: BFn.DoBFn`` with a ``BDat``
+    buffer carrying an Intel DPTF USTT command). This check reports whether that
+    interface is present, and is explicit that *writes* are not yet enabled.
+    """
+    try:
+        from . import thermal
+    except Exception as exc:  # noqa: BLE001
+        return ("Dell thermal interface", WARN, f"Could not load the probe: {exc}")
+
+    if sys.platform != "win32":
+        return (
+            "Dell thermal interface",
+            INFO,
+            "Dell's ACPI-WMI thermal interface is Windows-only.",
+        )
+
+    try:
+        caps = thermal.probe()
+    except Exception as exc:  # noqa: BLE001
+        return (
+            "Dell thermal interface",
+            INFO,
+            f"Could not probe it: {exc}",
+        )
+
+    if caps.acpi_wmi_supported is None:
+        return (
+            "Dell thermal interface",
+            INFO,
+            "Could not determine whether the firmware supports Dell's thermal "
+            "interface. " + " ".join(caps.notes[:2]),
+        )
+
+    if not caps.acpi_wmi_supported:
+        return (
+            "Dell thermal interface",
+            INFO,
+            "The firmware reports no ACPI-WMI support, so Dell's thermal interface "
+            "is not available here.",
+        )
+
+    classes = ", ".join(f"DA_CLASS_{c:02d}" for c in caps.supported_da_classes)
+    return (
+        "Dell thermal interface",
+        WARN,
+        f"Present (AcpiWmiSupported, {classes}) and it is what Dell Power Manager "
+        "uses to set the thermal mode. Reading and writing it from XPS Helper is "
+        "NOT enabled yet: the USTT command frame has not been confirmed on "
+        "hardware, and a wrong byte pattern goes into a firmware thermal "
+        "controller. Use Dell Power Manager for thermal modes meanwhile.",
+    )
 
 
 def _doctor_linux_sysman(report: DoctorReport, backend: "LinuxSysmanBackend") -> None:

@@ -17,5 +17,9 @@ htmlcov/
 # PyInstaller
 *.manifest
 
+# .NET build output for the analysis tools under tools/
+obj/
+bin/
+
 # Prebuilt release bundles downloaded from GitHub Releases
 *.zip
