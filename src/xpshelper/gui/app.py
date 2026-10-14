@@ -122,6 +122,9 @@ class HelperWindow:
         self._refresh_handle = None
         self._busy = False
         self._photo = None
+        # Set once the thermal mode has been read for the first time. The read is
+        # a multi-second WMI round trip, so it is not repeated on every poll.
+        self._thermal_read_done = False
 
         # G-Helper's palette. Read once at construction: the window is not
         # designed to flip theme live, and re-styling every widget on the fly is
@@ -147,10 +150,7 @@ class HelperWindow:
         self._wire_tray(use_tray)
         self._sync_from_service()
         self._refresh_async()
-        # Deliberately once, not on every status poll: each thermal read is a WMI
-        # round trip that costs several seconds, and the mode only changes when
-        # this window (or Dell's own app) changes it.
-        self._refresh_thermal()
+        # NOTE: deliberately no _refresh_thermal() here. See _apply_status.
 
     # -- construction -----------------------------------------------------
     def _build(self) -> None:
@@ -579,10 +579,10 @@ class HelperWindow:
         self._on_profile_selected()
 
     def _select_and_apply_thermal(self, name: str) -> None:
-        """Mark a thermal mode and apply it."""
+        """Mark a thermal mode and apply it. This is what a button click does."""
         self._thermal_var.set(name)
         self._mark_selected(self._thermal_buttons, name)
-        self._on_thermal_mode_selected()
+        self._on_thermal_mode_selected(name)
 
     def _select_charge_mode(self, token: str) -> None:
         """Mark a charge mode without applying it.
@@ -607,9 +607,14 @@ class HelperWindow:
                 pass
 
     # -- thermal mode (Dell ACPI-WMI) -------------------------------------
-    def _on_thermal_mode_selected(self) -> None:
-        """Apply a thermal mode, reverting the radio if it fails."""
-        target = self._thermal_var.get()
+    def _on_thermal_mode_selected(self, target: str | None = None) -> None:
+        """Apply a thermal mode, reverting the button if it is refused.
+
+        ``target`` is passed explicitly rather than read from ``_thermal_var``:
+        the variable is a leftover from when these were radio buttons, and
+        reading it here meant a click could act on an empty value.
+        """
+        target = target or self._thermal_var.get()
         if not target:
             return
         self._set_thermal_hint(f"Applying {target}...")
@@ -621,7 +626,10 @@ class HelperWindow:
                 return
             self._apply_thermal_result(result)
 
-        self._run_async(lambda: self.service.set_thermal_mode(target), done)
+        # If the worker slot is busy the write never starts, so put the button
+        # back rather than leaving it showing a mode that was not applied.
+        if not self._run_async(lambda: self.service.set_thermal_mode(target), done):
+            self._refresh_thermal()
 
     def _apply_thermal_result(self, result) -> None:
         """Refresh the mode buttons from a ThermalTables report."""
@@ -650,7 +658,7 @@ class HelperWindow:
                 return
             self._apply_thermal_result(result)
 
-        self._run_async(self.service.read_thermal_mode, done)
+        self._run_read(self.service.read_thermal_mode, done)
 
     # -- state sync -------------------------------------------------------
     def _sync_from_service(self) -> None:
@@ -715,6 +723,18 @@ class HelperWindow:
         for warning in status.warnings:
             self._set_message(warning, severity="warn")
 
+        # The thermal read is started here, not in __init__. Every async job goes
+        # through _run_async, which refuses to start while _busy is set, so
+        # calling it right after _refresh_async() silently dropped it -- the mode
+        # buttons then never showed which mode was active. Chaining it off the
+        # first completed refresh means the slot is free.
+        #
+        # Once only: a thermal read is a WMI round trip costing several seconds,
+        # and the mode only changes when this window or Dell's own app changes it.
+        if not self._thermal_read_done:
+            self._thermal_read_done = True
+            self._refresh_thermal()
+
     def _set_message(self, text: str, *, severity: str = "info") -> None:
         colours = {"info": "#333333", "warn": "#8a6d3b", "error": "#a94442", "ok": "#3c763d"}
         self._message_var.set(text)
@@ -724,11 +744,41 @@ class HelperWindow:
             pass
 
     # -- async plumbing ---------------------------------------------------
-    def _run_async(self, work: Callable[[], object], on_done: Callable[[object, Exception | None], None]) -> None:
-        """Run ``work`` off the UI thread, then deliver the result on it."""
+    def _run_async(
+        self,
+        work: Callable[[], object],
+        on_done: Callable[[object, Exception | None], None],
+        *,
+        background_poll: bool = False,
+    ) -> bool:
+        """Run ``work`` off the UI thread, then deliver the result on it.
+
+        Returns whether the work was actually started.
+
+        There is one worker slot, and two very different kinds of caller:
+
+        * a **user action** (a click) must be honoured. Dropping it is the worst
+          outcome available, because the button has already redrawn itself as
+          selected while nothing happened -- which looks like the setting
+          silently failing.
+        * a **background poll** is optional. The periodic status refresh runs
+          every few seconds and holds the slot for the whole time, so with one
+          shared slot a click landing during a poll was refused. That is exactly
+          how the thermal buttons appeared dead.
+
+        So a poll yields to whatever else is running and simply waits for its next
+        tick; a user action is never refused by a poll.
+        """
         if self._busy:
-            self._set_message("Still working on the previous request...", severity="info")
-            return
+            if background_poll:
+                log.debug("skipping a background poll; the worker slot is in use")
+                return False
+            # A user action. Tell them, and do not pretend it started.
+            self._set_message(
+                "Still finishing the previous request; try again in a moment.",
+                severity="warn",
+            )
+            return False
         self._busy = True
 
         def runner() -> None:
@@ -748,10 +798,39 @@ class HelperWindow:
                 log.warning("could not deliver result to the UI thread: %s", exc)
 
         threading.Thread(target=runner, name="xps-helper-work", daemon=True).start()
+        return True
 
     def _finish(self, on_done, result, error) -> None:
         self._busy = False
         on_done(result, error)
+
+    def _run_read(
+        self,
+        work: Callable[[], object],
+        on_done: Callable[[object, Exception | None], None],
+    ) -> None:
+        """Run a read-only job without claiming the action slot.
+
+        Reads are frequent and slow -- the initial capability probe takes about
+        8 seconds and a thermal read about 5 -- and they change nothing. Letting
+        them hold the single worker slot meant a click could arrive while a read
+        was in flight and be refused, which the user experiences as a button that
+        does nothing. Reads therefore do not serialise against anything; only
+        writes and settings changes claim the slot.
+        """
+
+        def runner() -> None:
+            try:
+                result = work()
+                error: Exception | None = None
+            except Exception as exc:  # noqa: BLE001 - surfaced to the user
+                result, error = None, exc
+            try:
+                self.root.after(0, lambda: on_done(result, error))
+            except Exception as exc:  # noqa: BLE001 - window may be gone
+                log.warning("could not deliver a read result to the UI thread: %s", exc)
+
+        threading.Thread(target=runner, name="xps-helper-read", daemon=True).start()
 
     def _refresh_async(self) -> None:
         if self._closing:
@@ -779,7 +858,7 @@ class HelperWindow:
                 self._set_message(f"Could not read status: {error}", severity="error")
             self._schedule_refresh()
 
-        self._run_async(work, done)
+        self._run_async(work, done, background_poll=True)
 
     def _schedule_refresh(self) -> None:
         if self._closing:
