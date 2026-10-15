@@ -536,15 +536,16 @@ def test_a_task_pointing_at_a_missing_target_is_treated_as_stale(
     where the path belongs to whoever installed it -- the task can never start, and
     callers would otherwise just see a timeout. It must report as not installed so
     the user is told to reinstall.
+
+    The parsed action path is stubbed rather than faked through ``subprocess``:
+    the real parser looks for a Windows drive path, so a ``tmp_path`` on Linux is
+    not recognised and the test would pass or fail for the wrong reason.
     """
     missing = tmp_path / "gone" / "xps-helper.exe"
-
-    class Ok:
-        returncode = 0
-        stdout = f"TaskName:  x\nTask To Run:  {missing} -m xpshelper.elevated_run\n"
+    assert not missing.exists()
 
     monkeypatch.setattr(priv.sys, "platform", "win32")
-    monkeypatch.setattr(priv.subprocess, "run", lambda *a, **k: Ok())
+    monkeypatch.setattr(priv, "_task_action_path", lambda task_name=priv.TASK_NAME: str(missing))
     assert priv.action_target_exists() is False
 
 
@@ -554,12 +555,8 @@ def test_a_task_pointing_at_a_real_target_is_treated_as_valid(
     present = tmp_path / "xps-helper.exe"
     present.write_bytes(b"MZ")
 
-    class Ok:
-        returncode = 0
-        stdout = f"Task To Run:  {present} -m xpshelper.elevated_run\n"
-
     monkeypatch.setattr(priv.sys, "platform", "win32")
-    monkeypatch.setattr(priv.subprocess, "run", lambda *a, **k: Ok())
+    monkeypatch.setattr(priv, "_task_action_path", lambda task_name=priv.TASK_NAME: str(present))
     assert priv.action_target_exists() is True
 
 

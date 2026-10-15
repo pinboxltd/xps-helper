@@ -231,13 +231,25 @@ def test_probe_reports_this_machines_real_capability():
 
 
 def test_probe_never_raises_on_a_broken_environment(monkeypatch):
-    """A capability probe must degrade, not explode, in the UI thread."""
+    """A capability probe must degrade, not explode, in the UI thread.
+
+    The assertion differs by platform, and deliberately so: on Windows a broken
+    script propagates ``ThermalError``, while elsewhere ``probe`` short-circuits
+    before running anything and reports "not supported". Asserting only the
+    Windows branch made this fail on Linux, which is why CI never went green.
+    """
     def boom(*_a, **_k):
         raise ThermalError("simulated failure")
 
     monkeypatch.setattr(thermal, "_run_capability_script", boom)
-    with pytest.raises(ThermalError):
-        thermal.probe()
+
+    if sys.platform == "win32":
+        with pytest.raises(ThermalError):
+            thermal.probe()
+    else:
+        cap = thermal.probe()
+        assert cap.acpi_wmi_supported is False
+        assert any("Windows-only" in note for note in cap.notes)
 
 
 def test_capability_probe_script_never_writes():
