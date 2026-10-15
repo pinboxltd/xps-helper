@@ -521,12 +521,11 @@ def _thermal_interface_check() -> tuple[str, str, str]:
     classes = ", ".join(f"DA_CLASS_{c:02d}" for c in caps.supported_da_classes)
     return (
         "Dell thermal interface",
-        WARN,
+        OK,
         f"Present (AcpiWmiSupported, {classes}) and it is what Dell Power Manager "
-        "uses to set the thermal mode. Reading and writing it from XPS Helper is "
-        "NOT enabled yet: the USTT command frame has not been confirmed on "
-        "hardware, and a wrong byte pattern goes into a firmware thermal "
-        "controller. Use Dell Power Manager for thermal modes meanwhile.",
+        "uses to set the thermal mode. XPS Helper reads and writes it directly, so "
+        "on a model with no ThermalManagement BIOS attribute this is the route the "
+        "'xps-helper thermal' command and the window's thermal buttons use.",
     )
 
 
