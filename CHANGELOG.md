@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.3.1
+
+Three fixes found by actually looking at the running window on the target machine
+rather than at the tests. All three made the app appear broken when it was not.
+
+### The Performance profile buttons were disabled with no explanation
+
+Every Performance button was correctly greyed out — this model has no
+`ThermalManagement` BIOS attribute — but the hint underneath read
+
+```
+Fans run slower and CPU power is capped (~11 W on XPS 13), so the machine is
+near-silent but slower and can run warmer.
+```
+
+which is the *Quiet* profile description. Disabled controls with a description
+beside them and nothing saying why just look broken.
+
+Two methods wrote that one label and the later one won: `_apply_capabilities`
+wrote the reason, then `_sync_from_service` loaded `profile = "Quiet"` from
+settings and `_update_hints` overwrote the reason with its description. The
+explanation now wins whenever the firmware has confirmed the attribute is absent,
+while a machine that has it still shows the selected profile's description.
+
+### Selecting a thermal mode did nothing
+
+Reported as "ultra doesnt work" — it was not specific to Ultra. Three causes:
+
+- **The thermal read never ran.** `__init__` called `_refresh_async()` and then
+  `_refresh_thermal()` immediately, but both go through `_run_async`, which
+  refuses to start while busy. The read was dropped, so no mode was ever
+  highlighted. It is now chained off the first completed status refresh.
+- **The click read the wrong thing.** `_on_thermal_mode_selected` took its target
+  from `_thermal_var`, a leftover from when these were radio buttons, and a trace
+  showed it acting on `''`. The target is passed explicitly now.
+- **One worker slot served reads and writes.** The periodic status refresh holds
+  the slot for ~8 s (capability probe) or ~5 s (thermal read), so a click landing
+  during one was refused with "Still working on the previous request...". Reads now
+  run on their own path; only writes claim the slot, and a refused write reverts
+  the button instead of leaving it showing a mode that was not applied.
+
+### CI had never passed, so no binary was ever published
+
+The workflow runs the suite on `ubuntu-latest` as well as `windows-latest`, and
+two tests asserted Windows-only behaviour. Because the packaging job declares
+`needs: test`, **`build-exe` was skipped on every run** — the releases that exist
+were built by hand. Both tests now assert the branch that actually applies per
+platform.
+
 ## v0.3.0
 
 Thermal-mode control, reverse-engineered from Dell and replicated in this
