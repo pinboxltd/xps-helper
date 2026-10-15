@@ -125,6 +125,10 @@ class HelperWindow:
         # Set once the thermal mode has been read for the first time. The read is
         # a multi-second WMI round trip, so it is not repeated on every poll.
         self._thermal_read_done = False
+        # True once the firmware has confirmed it has no ThermalManagement
+        # attribute. Keeps the "not available" explanation from being overwritten
+        # by a profile description loaded out of settings.
+        self._profile_unavailable = False
 
         # G-Helper's palette. Read once at construction: the window is not
         # designed to flip theme live, and re-styling every widget on the fly is
@@ -504,11 +508,14 @@ class HelperWindow:
         # than leaving it available.
         if caps.supports_thermal is False:
             self._disable_group(self._profile_buttons)
+            self._profile_unavailable = True
             self._set_profile_hint(
-                "Not available: this BIOS exposes no thermal-profile setting. Use the "
-                "thermal mode buttons below, which drive Dell's ACPI-WMI interface."
+                "Not available: this BIOS exposes no thermal-profile setting, so the "
+                "buttons above are disabled. Use the thermal modes below, which drive "
+                "Dell's ACPI-WMI interface instead."
             )
         elif caps.thermal_profiles:
+            self._profile_unavailable = False
             self._enable_only(self._profile_buttons, caps.thermal_profiles)
 
         if caps.supports_charge is False:
@@ -679,8 +686,17 @@ class HelperWindow:
         self._update_threshold_state()
 
     def _update_hints(self) -> None:
-        profile = ThermalProfile.from_token(self._profile_var.get())
-        self._profile_hint.set_text(profile.description if profile else "")
+        """Show the selected option's description, unless it cannot be used.
+
+        Two methods want this label. ``_apply_capabilities`` writes the reason a
+        group is disabled; this method writes what the selected option does. When
+        the capability is known to be absent the explanation must win -- otherwise
+        a saved setting from a previous machine leaves the buttons disabled with
+        only a description beside them, and nothing says why.
+        """
+        if not self._profile_unavailable:
+            profile = ThermalProfile.from_token(self._profile_var.get())
+            self._profile_hint.set_text(profile.description if profile else "")
         mode = ChargeMode.from_token(self._charge_var.get())
         self._charge_hint.set_text(mode.description if mode else "")
 

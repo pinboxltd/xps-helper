@@ -279,6 +279,67 @@ def test_failed_profile_selection_is_reverted_in_the_ui():
 # Added once the interface was reverse-engineered. The radios must reflect what the
 # firmware reports and must not present a mode the firmware does not offer.
 # ---------------------------------------------------------------------------
+def test_the_unavailable_reason_survives_a_saved_profile(monkeypatch):
+    """A saved profile must not overwrite the explanation for disabled buttons.
+
+    Regression test for what the window actually showed on an XPS 13 7390 2-in-1:
+    every Performance button was correctly disabled, but the hint underneath read
+    "Fans run slower and CPU power is capped (~11 W on XPS 13)...". That is the
+    *Quiet* profile description, loaded from settings by _sync_from_service. With
+    nothing saying why, greyed-out buttons just look broken.
+
+    Two methods write this one label, so the explanation has to win when the
+    capability is known to be absent.
+    """
+    window = _window(None)
+    window._profile_unavailable = False
+    window._thermal_var = SimpleNamespace(get=lambda: "", set=lambda v: None)
+    window._charge_var = SimpleNamespace(get=lambda: ChargeMode.STANDARD.value)
+    window._charge_hint = FakeWidget(text='')
+    window._update_hints = HelperWindow._update_hints.__get__(window)
+
+    # A profile is selected, as it would be from a settings file.
+    window._profile_var = SimpleNamespace(get=lambda: ThermalProfile.QUIET.value)
+
+    caps = Capabilities(
+        control_backend="wmi-bios",
+        supports_thermal=False,
+        supports_charge=False,
+    )
+    window._apply_capabilities(caps)
+    reason = window._profile_hint.text
+    assert "no thermal-profile setting" in reason, reason
+
+    # Anything that refreshes the hints afterwards must not clobber it.
+    window._update_hints()
+    assert window._profile_hint.text == reason, window._profile_hint.text
+
+
+def test_a_working_machine_still_shows_the_profile_description():
+    """The explanation must not stick once thermal support is genuinely present."""
+    from xpshelper.model import ThermalProfile as _TP
+
+    window = _window(None)
+    window._profile_unavailable = True          # left over from a disabled run
+    window._thermal_var = SimpleNamespace(get=lambda: "", set=lambda v: None)
+    window._charge_var = SimpleNamespace(get=lambda: ChargeMode.STANDARD.value)
+    window._charge_hint = FakeWidget(text='')
+    window._update_hints = HelperWindow._update_hints.__get__(window)
+    window._profile_var = SimpleNamespace(get=lambda: _TP.QUIET.value)
+
+    caps = Capabilities(
+        control_backend="wmi-bios",
+        supports_thermal=True,
+        supports_charge=True,
+        thermal_profiles=(_TP.QUIET,),
+        charge_modes=(ChargeMode.STANDARD,),
+    )
+    window._apply_capabilities(caps)
+    assert window._profile_unavailable is False
+    window._update_hints()
+    assert "silent" in window._profile_hint.text.lower()
+
+
 def _thermal_window() -> SimpleNamespace:
     """A stand-in exposing only what the thermal handlers touch."""
     window = SimpleNamespace(
