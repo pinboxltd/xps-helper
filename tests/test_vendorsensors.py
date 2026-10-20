@@ -125,6 +125,7 @@ def test_hwinfo_registry_rows_are_parsed(monkeypatch):
     ]
     fake = _fake_winreg({vs.HWINFO_KEYS[0]: values})
     monkeypatch.setitem(sys.modules, "winreg", fake)
+    monkeypatch.setattr(vs, "_is_windows", lambda: True)
 
     sensors = vs.hwinfo_sensors()
     by_kind = {s.kind: s for s in sensors}
@@ -141,6 +142,7 @@ def test_hwinfo_accepts_the_label_spelling(monkeypatch):
         ("ValueType0", 1, 4),
     ]
     monkeypatch.setitem(sys.modules, "winreg", _fake_winreg({vs.HWINFO_KEYS[0]: values}))
+    monkeypatch.setattr(vs, "_is_windows", lambda: True)
     sensors = vs.hwinfo_sensors()
     assert len(sensors) == 1
     assert sensors[0].value == 47.5
@@ -148,6 +150,7 @@ def test_hwinfo_accepts_the_label_spelling(monkeypatch):
 
 def test_hwinfo_absent_returns_nothing(monkeypatch):
     monkeypatch.setitem(sys.modules, "winreg", _fake_winreg({}))
+    monkeypatch.setattr(vs, "_is_windows", lambda: True)
     assert vs.hwinfo_sensors() == []
 
 
@@ -159,12 +162,14 @@ def test_hwinfo_with_unknown_shape_fails_closed(monkeypatch):
     """
     values = [("SomethingElse", "51.0", 1), ("AnotherThing", "2.91", 1)]
     monkeypatch.setitem(sys.modules, "winreg", _fake_winreg({vs.HWINFO_KEYS[0]: values}))
+    monkeypatch.setattr(vs, "_is_windows", lambda: True)
     assert vs.hwinfo_sensors() == []
 
 
 def test_hwinfo_rows_without_a_label_are_dropped(monkeypatch):
     values = [("Value0", "51.0", 1), ("ValueType0", 1, 4)]
     monkeypatch.setitem(sys.modules, "winreg", _fake_winreg({vs.HWINFO_KEYS[0]: values}))
+    monkeypatch.setattr(vs, "_is_windows", lambda: True)
     assert vs.hwinfo_sensors() == []
 
 
@@ -175,6 +180,7 @@ def test_hwinfo_unknown_value_type_is_dropped(monkeypatch):
         ("ValueType0", 99, 4),
     ]
     monkeypatch.setitem(sys.modules, "winreg", _fake_winreg({vs.HWINFO_KEYS[0]: values}))
+    monkeypatch.setattr(vs, "_is_windows", lambda: True)
     assert vs.hwinfo_sensors() == []
 
 
