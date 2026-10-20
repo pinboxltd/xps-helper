@@ -55,49 +55,51 @@ jobs:
           python -m pip install pyinstaller
           python -m pip install ".[gui]"
 
-      - name: Build with PyInstaller
-        run: pyinstaller packaging/xpshelper.spec --noconfirm
+      - name: Build with PyInstaller (single file)
+        run: pyinstaller packaging/xpshelper_onefile.spec --noconfirm
 
-      - name: Verify the executables actually run
+      - name: Verify the executable actually runs
         shell: pwsh
         run: |
-          $cli = ".\dist\xps-helper\xps-helper.exe"
-          $gui = ".\dist\xps-helper\xps-helper-gui.exe"
-          if (-not (Test-Path $cli)) { throw "CLI executable missing" }
-          if (-not (Test-Path $gui)) { throw "GUI executable missing" }
+          # One file, no folder: the release asset is the executable itself.
+          $exe = ".\dist\xps-helper.exe"
+          if (-not (Test-Path $exe)) { throw "Executable missing at $exe" }
+          $size = (Get-Item $exe).Length / 1MB
+          Write-Host ("xps-helper.exe is {0:N1} MB" -f $size)
 
-          # Exit codes matter: a frozen build that cannot import its own
-          # package still produces a binary, so exercise real commands.
-          & $cli --version
+          # Exit codes matter: a frozen build that cannot import its own package
+          # still produces a binary, so exercise real commands.
+          & $exe --version
           if ($LASTEXITCODE -ne 0) { throw "xps-helper --version failed" }
 
-          & $cli --backend mock status
+          & $exe --backend mock status
           if ($LASTEXITCODE -ne 0) { throw "status failed" }
 
-          & $cli --backend mock --config "$env:TEMP\xh-ci.json" charge custom --start 60 --stop 80
+          & $exe --backend mock --config "$env:TEMP\xh-ci.json" charge custom --start 60 --stop 80
           if ($LASTEXITCODE -ne 0) { throw "charge failed" }
 
-          & $cli --backend mock --config "$env:TEMP\xh-ci.json" doctor
+          & $exe --backend mock --config "$env:TEMP\xh-ci.json" doctor
           if ($LASTEXITCODE -ne 0) { throw "doctor failed" }
 
-          Write-Host "All executable smoke checks passed."
+          # The privileged child is dispatched with -m, which a frozen exe has to
+          # interpret itself. With no pending request it must fail cleanly rather
+          # than fall through to the ordinary CLI.
+          & $exe -m xpshelper.elevated_run 2>&1 | Out-Null
+          if ($LASTEXITCODE -eq 0) { throw "-m dispatch should fail without a request" }
 
-      - name: Package
-        shell: pwsh
-        run: |
-          Compress-Archive -Path dist\xps-helper\* -DestinationPath xps-helper-windows.zip -Force
-          Get-Item xps-helper-windows.zip | Format-List Name, Length
+          Write-Host "All executable smoke checks passed."
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: xps-helper-windows
-          path: xps-helper-windows.zip
+          path: dist/xps-helper.exe
           if-no-files-found: error
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: xps-helper-windows.zip
+          # The executable itself, not a zip: one download, no unzipping.
+          files: dist/xps-helper.exe
           generate_release_notes: true
