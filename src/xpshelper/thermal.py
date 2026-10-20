@@ -162,36 +162,39 @@ THERMAL_MODES: dict[str, int] = {
 #: Treat "no cap" as "the firmware's default limit", which is not unbounded.
 THERMAL_MODE_DETAILS: dict[str, dict[str, str]] = {
     "Quiet": {
-        "power": "11 W sustained, 18 W boost (reported)",
+        "power": "measurably lower sustained power",
         "fans": "slowest -- the quietest option",
-        "effect": "CPU power is capped, so the machine is near-silent but slower "
-                  "and can run warmer.",
+        "effect": "Limits sustained CPU power, so it runs cooler and quieter but "
+                  "slower under long loads.",
     },
     "Cool": {
-        "power": "11 W sustained, 18 W boost (reported)",
+        "power": "similar to Balanced in testing",
         "fans": "faster -- keeps the chassis cooler",
-        "effect": "Same power cap as Quiet, spent on fan speed instead of silence.",
+        "effect": "Prefers fan speed over power limiting, trading noise for a "
+                  "cooler chassis.",
     },
     "Balanced": {
-        "power": "no cap (reported) -- firmware default limit",
+        "power": "firmware default limit",
         "fans": "firmware default curve",
-        "effect": "Dell's default. Full sustained CPU power with the standard fan "
-                  "curve, and the usual starting point.",
+        "effect": "Dell's default. The usual starting point.",
     },
     "Ultra": {
-        "power": "no cap (reported) -- firmware default limit",
+        "power": "highest measured sustained power",
         "fans": "loudest under load",
-        "effect": "Removes the power cap for sustained performance; fans run "
-                  "harder and the machine gets warmer.",
+        "effect": "Lets the CPU sustain more power, so it is the fastest and "
+                  "reaches the highest temperatures.",
     },
 }
 
 #: Safety net: the wiki notes profile changes do not always take effect.
 THERMAL_MODE_CAVEAT = (
-    "Reported figures, not measurements. The firmware exposes no wattage, so these "
-    "come from documented behaviour for XPS 13 hardware and this tool does not "
-    "measure them. Note that thermal-mode changes do not always alter the CPU power "
-    "limit immediately."
+    "Measured on an XPS 13 7390 2-in-1 under sustained load, the modes are real "
+    "but modest: Quiet drew roughly 10-30% less CPU power and ran a few degrees "
+    "cooler than Ultra, which ran hottest. At idle or light use there is no "
+    "observable difference, and fan speed cannot be read on this model, so the "
+    "part of the effect that is audible is invisible here. Earlier versions "
+    "quoted 11 W / 18 W figures from documentation for other XPS 13 models; those "
+    "numbers were never measured on this hardware and have been removed."
 )
 
 #: Accepted spellings, so callers can say "ultra" or "Ultra Performance".

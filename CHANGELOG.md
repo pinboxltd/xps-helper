@@ -1,5 +1,50 @@
 # Changelog
 
+## v0.6.4
+
+### "The thermal modes don't seem to make any real difference"
+
+Reported, so it was measured instead of argued about. Each mode was set, the
+machine put under identical sustained CPU load, and the Intel DPTF zones sampled
+(temperature and per-zone power) once the ramp was over.
+
+Two independent runs:
+
+| Mode | run 1: peak temp / power | run 2: steady temp / power |
+|---|---|---|
+| Quiet | 87 C / 477 | 81.0 C / 586 |
+| Balanced | 87 C / 679 | -- |
+| Cool | 90 C / 677 | -- |
+| Ultra | 92 C / 669 | 84.3 C / 641 |
+
+Both runs agree on the direction: **Quiet limits sustained CPU power** (roughly
+10-30% less depending on the run) and runs a few degrees cooler; **Ultra runs
+hottest and sustains the most power**. So the modes are real.
+
+They are also **modest**, and invisible at idle -- which is exactly why they feel
+like they do nothing. Three further reasons the effect is easy to miss on this
+machine:
+
+- The difference only appears under *sustained* load, after the ramp.
+- Fan speed cannot be read at all here (no Dell Command | Monitor, no
+  LibreHardwareMonitor), so the part of the effect that is audible is invisible
+  to the app.
+- A change takes effect over seconds, not instantly.
+
+### Corrected: the wattage claims
+
+The mode descriptions quoted "11 W sustained, 18 W boost" for Quiet and Cool, and
+"no cap" for Balanced and Ultra. Those numbers came from documentation for *other*
+XPS 13 models and were never measured on this hardware. They have been removed.
+
+The descriptions now say what was measured (lower/highest sustained power) and the
+caveat states plainly that the modes are real but modest, that nothing is visible
+at idle, and that fan speed is unreadable here.
+
+### Tests
+
+**471 passed**, 6 skipped.
+
 ## v0.6.3
 
 ### A console window still appeared when changing the thermal mode
