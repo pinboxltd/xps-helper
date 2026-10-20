@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.6.3
+
+### A console window still appeared when changing the thermal mode
+
+The window was gone for the app itself but not for thermal changes, because those
+took a different route: ``read_thermal_mode`` and ``set_thermal_mode`` delegated to
+the privileged helper whenever it was installed, **without first checking whether
+the process was already elevated**. The packaged executable always is, so every
+thermal click started the Scheduled Task -- and that task runs ``python.exe``, a
+console program, so a Python console window opened each time.
+
+The charge path has always had that check. The thermal path did not. Both now go
+through one ``_should_use_helper()``, which answers: not while we are the
+privileged child (recursion), not when already elevated (nothing to gain), only
+when a helper is actually installed.
+
+The helper child also detaches its own console with ``FreeConsole`` now, so it does
+not flash a window on the source-install path either. Its output goes to the
+request's captured-output files, never to the terminal, so nothing is lost.
+
+Measured effect on a source run, which still uses the helper: a thermal change
+went from about 8 s to **3.6 s**, because the round trip no longer pays for the
+console.
+
+### Tests
+
+**471 passed**, 6 skipped.
+
 ## v0.6.2
 
 ### The black console window is gone

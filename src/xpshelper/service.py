@@ -298,21 +298,47 @@ class XpsHelper:
     # Power Manager itself uses, so it is the only way to change the performance
     # mode. It needs elevation, which the privileged helper supplies without a
     # prompt.
+    def _should_use_helper(self) -> bool:
+        """Whether a thermal call should go through the privileged helper.
+
+        Needed because the thermal paths were delegating whenever the helper was
+        installed, without first asking whether this process is *already*
+        elevated. In the packaged executable it always is, so every thermal click
+        started the scheduled task -- which runs a console Python, so a black
+        window appeared on each change and the round trip was paid for nothing.
+
+        The charge path has always had this check; the thermal one did not. Same
+        rule for both: a privileged process does the work itself.
+        """
+        from . import privileged as priv
+
+        if priv.is_privileged_child():
+            return False
+        try:
+            from .elevate import is_elevated
+
+            if is_elevated():
+                return False
+        except Exception:  # noqa: BLE001 - never let a probe break a write
+            return False
+        try:
+            return priv.is_installed()
+        except Exception:  # noqa: BLE001
+            return False
+
     def read_thermal_mode(self) -> "thermal.ThermalTables":
         """Read the firmware's thermal tables over Dell's ACPI-WMI interface."""
-        from . import privileged as priv
         from . import thermal as thermal_mod
 
-        if priv.is_installed() and not priv.is_privileged_child():
+        if self._should_use_helper():
             return self._thermal_via_helper(read_only=True)
         return thermal_mod.read_thermal_mode()
 
     def set_thermal_mode(self, mode: str | int) -> "thermal.ThermalTables":
         """Set the thermal mode over Dell's ACPI-WMI interface, then verify."""
-        from . import privileged as priv
         from . import thermal as thermal_mod
 
-        if priv.is_installed() and not priv.is_privileged_child():
+        if self._should_use_helper():
             return self._thermal_via_helper(mode=mode)
         return thermal_mod.set_thermal_mode(mode)
 

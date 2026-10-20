@@ -37,7 +37,27 @@ import sys
 from typing import Any
 
 
+def _detach_console() -> None:
+    """Detach from the console the caller allocated, so no window appears.
+
+    The Scheduled Task starts this module through ``python.exe``, a console
+    program, so Windows gives it a console window. Nothing here is shown to the
+    user: output goes to the request's captured-output files, never to the
+    terminal, so the window is pure noise appearing on top of the app.
+
+    Safe to call when there is no console at all, and harmless if it fails.
+    """
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.FreeConsole()
+    except Exception:  # noqa: BLE001 - non-Windows, or no console
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _detach_console()
+
     argv = list(sys.argv[1:] if argv is None else argv)
 
     if len(argv) > 1:
