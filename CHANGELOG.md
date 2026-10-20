@@ -36,6 +36,51 @@ refusing when a shell is attached, refusing when a process cannot be inspected, 
 case-insensitive name comparison, and that a source run never touches the console.
 # Changelog
 
+## v0.7.4
+
+### The thermal modes do not measurably do anything here
+
+You said you were not sure they did anything. Tested properly this time, and you
+were right.
+
+The earlier evidence was an Intel DPTF `Power` field whose units were never
+confirmed -- which is not evidence at all. The test that settles it needs no driver
+and no units: **time a fixed amount of CPU work in each mode**. If a power limit
+changed, the CPU could not sustain its clock and the same work would take longer.
+
+Two runs, order varied, one thread, ~56 million iterations each:
+
+| Mode | run 1 | run 2 |
+|---|---|---|
+| Balanced | 5.58 s / 5.54 s | 5.62 s |
+| Ultra | 5.99 s | 5.61 s / 5.75 s |
+| Quiet | 5.79 s | 5.62 s |
+
+Everything lands within about 2-8%, and **the ranking flips between runs**: run 1
+had Balanced fastest, run 2 had Ultra fastest. That is noise, not an effect.
+
+So on this machine the firmware accepts the thermal mode, reads it back correctly,
+and nothing measurable changes in CPU performance. If the setting does anything
+here it is not throughput -- most plausibly the fan curve, which cannot be read on
+this model at all.
+
+### Corrected, again
+
+The mode descriptions now say the firmware accepts the mode and that no
+reproducible performance difference was measured. The claim that Quiet "limits
+sustained CPU power" came from the DPTF proxy and did not survive this test; it is
+gone, along with the wattage figures removed earlier.
+
+### Tooling
+
+`scripts/mode_benchmark.py` is kept so the measurement can be repeated rather than
+taken on trust, and `scripts/bump_version.py` now fails loudly instead of silently
+not bumping -- that bug is what made v0.7.1 and v0.7.2 report the wrong version.
+
+### Tests
+
+**506 passed**, 6 skipped.
+
 ## v0.7.3
 
 ### The published executables reported the wrong version

@@ -162,39 +162,42 @@ THERMAL_MODES: dict[str, int] = {
 #: Treat "no cap" as "the firmware's default limit", which is not unbounded.
 THERMAL_MODE_DETAILS: dict[str, dict[str, str]] = {
     "Quiet": {
-        "power": "measurably lower sustained power",
-        "fans": "slowest -- the quietest option",
-        "effect": "Limits sustained CPU power, so it runs cooler and quieter but "
-                  "slower under long loads.",
+        "power": "no measurable throughput change in testing",
+        "fans": "documented as the quietest option",
+        "effect": "Firmware accepts this mode. Whether it changes anything on your "
+                  "machine is unconfirmed: a fixed-work benchmark showed no "
+                  "reproducible speed difference from any other mode.",
     },
     "Cool": {
-        "power": "similar to Balanced in testing",
-        "fans": "faster -- keeps the chassis cooler",
-        "effect": "Prefers fan speed over power limiting, trading noise for a "
-                  "cooler chassis.",
+        "power": "no measurable throughput change in testing",
+        "fans": "documented as a cooler chassis at the cost of noise",
+        "effect": "Firmware accepts this mode; no reproducible performance "
+                  "difference was measured on this hardware.",
     },
     "Balanced": {
-        "power": "firmware default limit",
+        "power": "no measurable throughput change in testing",
         "fans": "firmware default curve",
-        "effect": "Dell's default. The usual starting point.",
+        "effect": "Dell's default. Matches every other mode in measured"
+                  " throughput.",
     },
     "Ultra": {
-        "power": "highest measured sustained power",
-        "fans": "loudest under load",
-        "effect": "Lets the CPU sustain more power, so it is the fastest and "
-                  "reaches the highest temperatures.",
+        "power": "no measurable throughput change in testing",
+        "fans": "documented as the loudest under load",
+        "effect": "Firmware accepts this mode and it reads back correctly, but it "
+                  "did not make this machine measurably faster.",
     },
 }
 
 #: Safety net: the wiki notes profile changes do not always take effect.
 THERMAL_MODE_CAVEAT = (
-    "Measured on an XPS 13 7390 2-in-1 under sustained load, the modes are real "
-    "but modest: Quiet drew roughly 10-30% less CPU power and ran a few degrees "
-    "cooler than Ultra, which ran hottest. At idle or light use there is no "
-    "observable difference, and fan speed cannot be read on this model, so the "
-    "part of the effect that is audible is invisible here. Earlier versions "
-    "quoted 11 W / 18 W figures from documentation for other XPS 13 models; those "
-    "numbers were never measured on this hardware and have been removed."
+    "Unconfirmed on this hardware. The firmware accepts the mode and reads it back "
+    "correctly, but a benchmark that times a fixed amount of CPU work in each mode "
+    "found no reproducible difference: four runs of Balanced, Ultra, Quiet and "
+    "Ultra all completed the same work within about 2-8%, and the ranking flipped "
+    "between runs. If these modes change anything here it is not CPU performance "
+    "and not observable through this tool -- most likely the fan curve, which "
+    "cannot be read on this model. Earlier versions quoted wattages and claimed "
+    "Quiet reduced sustained power; neither survived measurement."
 )
 
 #: Accepted spellings, so callers can say "ultra" or "Ultra Performance".
