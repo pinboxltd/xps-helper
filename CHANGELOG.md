@@ -1,3 +1,39 @@
+## v0.7.2
+
+### The black console window, third time -- and why the first two failed
+
+Both earlier attempts were wrong for concrete, different reasons:
+
+1. **FreeConsole only detaches.** It removes this process from the console; it
+   does not remove a window that another process still owns. A one-file build is
+   **two** processes -- the PyInstaller bootloader parent and the child -- and the
+   parent owns the console. Detaching in the child left the parent's black window
+   exactly where it was.
+2. **ShowWindow(SW_HIDE) was guarded by a wrong test.** That is the call that
+   actually hides a window, but it only ran when GetConsoleProcessList reported
+   *one* attached process. A one-file launch has two, so the guard was false and
+   nothing was ever hidden.
+
+The guard now asks the exact question instead of inferring from a count: **is
+anything attached to this console that is not this executable?** A double-click
+attaches only the bootloader and the child -- both xps-helper.exe -- so the
+window is hidden. Launching from a shell attaches cmd.exe/pwsh.exe too, and
+hiding then would blank the user's terminal, so it is left alone. A process that
+cannot be inspected counts as foreign, so the default is never to hide.
+
+There is also an escape hatch, because this decision has now been wrong twice and
+should not need a rebuild to correct:
+
+`
+XPSHELPER_HIDE_CONSOLE=1   always hide
+XPSHELPER_HIDE_CONSOLE=0   never hide
+`
+
+### Tests
+
+**504 passed**, 6 skipped. New tests cover: hiding when only the app is attached,
+refusing when a shell is attached, refusing when a process cannot be inspected, the
+case-insensitive name comparison, and that a source run never touches the console.
 # Changelog
 
 ## v0.7.0
@@ -1262,3 +1298,4 @@ both providers and that PowerShell is launched with the console suppressed.
 - Dell Command | Configure supported as an optional fallback only.
 - Thermal profiles, battery charge limits (including custom thresholds), battery
   status, temperatures, fan speeds, tray GUI, CLI, autostart, PyInstaller build.
+
