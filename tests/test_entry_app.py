@@ -34,7 +34,10 @@ def _load_entry_app():
 @pytest.fixture()
 def entry(monkeypatch):
     module = _load_entry_app()
-    monkeypatch.setattr(sys, "executable", r"C:\Apps\xps-helper.exe", raising=False)
+    # A bare file name on purpose: os.path.basename is ntpath on Windows but
+    # posixpath elsewhere, so a Windows-style path with backslashes keeps its
+    # directories on Linux and every comparison silently fails there.
+    monkeypatch.setattr(sys, "executable", "xps-helper.exe", raising=False)
     return module
 
 
@@ -133,7 +136,7 @@ def test_hide_runs_when_the_console_is_ours(entry, monkeypatch):
     def fake_windll(name, **kwargs):
         return FakeKernel if "kernel32" in name else FakeUser
 
-    monkeypatch.setattr(ctypes, "WinDLL", fake_windll)
+    monkeypatch.setattr(ctypes, "WinDLL", fake_windll, raising=False)
     entry._hide_own_console()
     assert "FreeConsole" in calls
     assert ("ShowWindow", 1234, 0) in calls
