@@ -262,6 +262,54 @@ def _cmd_internal_thermal(args: argparse.Namespace, service: XpsHelper) -> int:
     return EXIT_OK
 
 
+def _cmd_update(args: argparse.Namespace, service: XpsHelper) -> int:
+    """Check GitHub for a newer release, and offer the download link.
+
+    Never installs anything by itself: the release asset is a zip containing two
+    executables, and replacing a running Windows binary from inside itself is a
+    good way to leave a broken app behind. The user gets the exact URL instead.
+    """
+    from . import updates
+
+    try:
+        release = updates.check()
+    except updates.UpdateCheckError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        print(
+            "Could not check for updates. This is not the same as being up to "
+            "date -- try again when the network is available.",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    if release is None:
+        if args.json:
+            _print_json({"current": C.APP_VERSION, "update_available": False})
+        else:
+            print(f"XPS Helper {C.APP_VERSION} is the latest release.")
+        return EXIT_OK
+
+    if args.json:
+        _print_json(
+            {
+                "current": C.APP_VERSION,
+                "update_available": True,
+                "latest": release.version,
+                "url": release.url,
+                "download": release.asset_url,
+            }
+        )
+    else:
+        print(f"A newer release is available: {C.APP_VERSION} -> {release.version}")
+        print(f"  release notes : {release.url}")
+        if release.asset_url:
+            print(f"  download      : {release.asset_url}")
+            print("  Unzip it over the existing folder, then run 'xps-helper "
+                  "helper --install --force' so the scheduled task points at the "
+                  "new copy.")
+    return EXIT_OK
+
+
 def _cmd_thermal(args: argparse.Namespace, service: XpsHelper) -> int:
     """Read or set the thermal mode over Dell's ACPI-WMI interface.
 
@@ -298,7 +346,36 @@ def _cmd_thermal(args: argparse.Namespace, service: XpsHelper) -> int:
         print(f"Available            : {available}")
         if tables.fan_failure:
             print(f"Fan failure          : {tables.fan_failure}")
+        print()
+        print(_render_thermal_modes(tables))
     return EXIT_OK
+
+
+def _render_thermal_modes(tables) -> str:
+    """Describe every available mode, marking which one is active."""
+    from . import thermal as thermal_mod
+
+    lines: list[str] = []
+    for name in THERMAL_MODE_ORDER_FOR_CLI:
+        if name not in tables.supported_modes:
+            continue
+        detail = thermal_mod.THERMAL_MODE_DETAILS.get(name, {})
+        marker = "*" if name == tables.current_mode_name else " "
+        lines.append(f"{marker} {name}")
+        if detail.get("power"):
+            lines.append(f"    power : {detail['power']}")
+        if detail.get("fans"):
+            lines.append(f"    fans  : {detail['fans']}")
+        if detail.get("effect"):
+            lines.append(f"    {detail['effect']}")
+    if lines:
+        lines.append("")
+        lines.append("* = active. " + thermal_mod.THERMAL_MODE_CAVEAT)
+    return "\n".join(lines)
+
+
+#: Display order for the mode description block.
+THERMAL_MODE_ORDER_FOR_CLI = ("Quiet", "Cool", "Balanced", "Ultra")
 
 
 def _cmd_charge(args: argparse.Namespace, service: XpsHelper) -> int:
@@ -687,6 +764,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     thermal.add_argument("--json", action="store_true", help="Emit JSON.")
     thermal.set_defaults(func=_cmd_thermal)
+
+    update = subparsers.add_parser(
+        "update", parents=[_make_common(suppressed=True)],
+        help="Check GitHub for a newer release.",
+    )
+    update.add_argument("--json", action="store_true", help="Emit JSON.")
+    update.set_defaults(func=_cmd_update)
 
     # Hidden: the privileged helper's entry point for thermal work. Not listed in
     # help, and it takes no service, because it runs in the elevated child. The

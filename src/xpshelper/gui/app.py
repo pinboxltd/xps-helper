@@ -128,7 +128,6 @@ class HelperWindow:
         # True once the firmware has confirmed it has no ThermalManagement
         # attribute. Keeps the "not available" explanation from being overwritten
         # by a profile description loaded out of settings.
-        self._profile_unavailable = False
 
         # G-Helper's palette. Read once at construction: the window is not
         # designed to flip theme live, and re-styling every widget on the fly is
@@ -186,34 +185,6 @@ class HelperWindow:
             font=("Segoe UI", 8),
             anchor="w",
         ).pack(fill="x", pady=(0, theme.GROUP_GAP))
-
-        # -- performance (BIOS ThermalManagement attribute) ---------------
-        self._profile_header = widgets.SectionHeader(
-            outer, text="Performance profile", palette=p
-        )
-        self._profile_header.pack(fill="x", pady=(0, 4))
-
-        self._profile_frame = tk.Frame(outer, bg=p.form_back)
-        self._profile_frame.pack(fill="x", pady=(0, 4))
-
-        self._profile_buttons: dict[ThermalProfile, widgets.ModeButton] = {}
-        # Deliberately NOT calling capabilities() here: probing spawns cctk and
-        # PowerShell subprocesses and would freeze the window before it appears.
-        # All options start enabled and unsupported ones are disabled as soon as
-        # the first async status refresh returns a capability report.
-        for profile in ThermalProfile:
-            button = widgets.ModeButton(
-                self._profile_frame,
-                text=profile.label,
-                accent=theme.profile_accent(profile.value),
-                palette=p,
-                command=lambda value=profile.value: self._select_and_apply_profile(value),
-            )
-            button.pack(side="left", padx=(0, 6))
-            self._profile_buttons[profile] = button
-
-        self._profile_hint = widgets.Hint(outer, palette=p)
-        self._profile_hint.pack(fill="x", pady=(0, theme.GROUP_GAP))
 
         # -- thermal mode (Dell ACPI-WMI) ---------------------------------
         #
@@ -358,6 +329,10 @@ class HelperWindow:
         ttk.Button(actions, text="Apply saved", command=self._on_apply_saved).pack(
             side="left", padx=6
         )
+        self._update_button = ttk.Button(
+            actions, text="Check for updates", command=self._on_check_updates
+        )
+        self._update_button.pack(side="left", padx=(6, 0))
 
         self._message_label = ttk.Label(
             outer, textvariable=self._message_var, wraplength=400, justify="left"
@@ -503,21 +478,11 @@ class HelperWindow:
         if caps is None:
             return
 
-        # supports_thermal is False only when the attribute is genuinely absent.
-        # None means "could not tell", where hiding the control would be worse
-        # than leaving it available.
-        if caps.supports_thermal is False:
-            self._disable_group(self._profile_buttons)
-            self._profile_unavailable = True
-            self._set_profile_hint(
-                "Not available: this BIOS exposes no thermal-profile setting, so the "
-                "buttons above are disabled. Use the thermal modes below, which drive "
-                "Dell's ACPI-WMI interface instead."
-            )
-        elif caps.thermal_profiles:
-            self._profile_unavailable = False
-            self._enable_only(self._profile_buttons, caps.thermal_profiles)
-
+        # The Performance profile group has been removed. It controlled the same
+        # firmware setting as the Thermal mode group, but only over the
+        # ThermalManagement BIOS attribute, which many models (including this
+        # XPS 13 7390) do not expose. supports_thermal is deliberately ignored
+        # now that there is no group to enable or disable.
         if caps.supports_charge is False:
             self._disable_group(self._charge_buttons)
             self._apply_charge_button.configure(state="disabled")
@@ -562,12 +527,6 @@ class HelperWindow:
             except Exception:  # noqa: BLE001
                 pass
 
-    def _set_profile_hint(self, text: str) -> None:
-        try:
-            self._profile_hint.set_text(text)
-        except Exception:  # noqa: BLE001
-            pass
-
     def _set_thermal_hint(self, text: str) -> None:
         try:
             self._thermal_hint.set_text(text)
@@ -575,16 +534,6 @@ class HelperWindow:
             pass
 
     # -- selection handlers ------------------------------------------------
-    def _select_and_apply_profile(self, token: str) -> None:
-        """Mark a profile and apply it, as clicking the old radio did."""
-        try:
-            profile = ThermalProfile.from_token(token)
-        except Exception:  # noqa: BLE001
-            return
-        self._profile_var.set(token)
-        self._mark_selected(self._profile_buttons, token)
-        self._on_profile_selected()
-
     def _select_and_apply_thermal(self, name: str) -> None:
         """Mark a thermal mode and apply it. This is what a button click does."""
         self._thermal_var.set(name)
@@ -654,7 +603,28 @@ class HelperWindow:
         if not supported:
             self._set_thermal_hint("The firmware reports no thermal modes.")
         else:
-            self._set_thermal_hint("Available: " + ", ".join(result.supported_modes) + ".")
+            self._set_thermal_detail(current, result.supported_modes)
+
+    def _set_thermal_detail(self, current: str | None, supported) -> None:
+        """Describe the active mode: what it does and what it costs in watts.
+
+        The wattages are reported figures, not measurements -- the firmware
+        exposes no power value -- so the text says so rather than implying the
+        number was read from this machine.
+        """
+        from .. import thermal as thermal_mod
+
+        if not current:
+            self._set_thermal_hint("Available: " + ", ".join(supported) + ".")
+            return
+        detail = thermal_mod.THERMAL_MODE_DETAILS.get(current, {})
+        if not detail:
+            self._set_thermal_hint("Available: " + ", ".join(supported) + ".")
+            return
+        self._set_thermal_hint(
+            f"{current} -- {detail['power']}. Fans: {detail['fans']}. "
+            f"{detail['effect']}"
+        )
 
     def _refresh_thermal(self) -> None:
         """Read the thermal mode without blocking the UI thread."""
@@ -670,10 +640,6 @@ class HelperWindow:
     # -- state sync -------------------------------------------------------
     def _sync_from_service(self) -> None:
         settings = self.service.settings
-        profile = settings.as_profile()
-        if profile is not None:
-            self._profile_var.set(profile.value)
-            self._mark_selected(self._profile_buttons, profile)
         charge = settings.as_charge_config()
         if charge is not None:
             self._charge_var.set(charge.mode.value)
@@ -686,17 +652,7 @@ class HelperWindow:
         self._update_threshold_state()
 
     def _update_hints(self) -> None:
-        """Show the selected option's description, unless it cannot be used.
-
-        Two methods want this label. ``_apply_capabilities`` writes the reason a
-        group is disabled; this method writes what the selected option does. When
-        the capability is known to be absent the explanation must win -- otherwise
-        a saved setting from a previous machine leaves the buttons disabled with
-        only a description beside them, and nothing says why.
-        """
-        if not self._profile_unavailable:
-            profile = ThermalProfile.from_token(self._profile_var.get())
-            self._profile_hint.set_text(profile.description if profile else "")
+        """Show the selected charge mode's description."""
         mode = ChargeMode.from_token(self._charge_var.get())
         self._charge_hint.set_text(mode.description if mode else "")
 
@@ -719,9 +675,7 @@ class HelperWindow:
 
         profile = status.profile
         if profile is not None:
-            self._profile_var.set(profile.value)
-            self._mark_selected(self._profile_buttons, profile)
-        self._active_profile = profile
+            self._active_profile = profile
         charge = status.charge
         if charge is not None:
             self._charge_var.set(charge.mode.value)
@@ -888,47 +842,8 @@ class HelperWindow:
             pass
 
     # -- actions ----------------------------------------------------------
-    def _on_profile_selected(self) -> None:
-        profile = ThermalProfile.from_token(self._profile_var.get())
-        if profile is None:
-            return
-        self._update_hints()
-
-        # A radio button moves the moment it is clicked, before the firmware has
-        # agreed. Remember what was actually active so a refusal can put the
-        # control back, instead of leaving the window claiming a setting that
-        # never took effect.
-        previous = getattr(self, "_active_profile", None)
-
-        def work():
-            return self.service.set_profile(profile)
-
-        def done(result, error) -> None:
-            if error is not None:
-                if previous is not None and previous != profile:
-                    try:
-                        self._profile_var.set(previous.value)
-                        self._mark_selected(self._profile_buttons, previous)
-                        self._update_hints()
-                    except Exception:  # noqa: BLE001
-                        pass
-                self._report_error(error)
-                return
-            self._active_profile = profile
-            self._set_message(f"Performance set to {profile.label}.", severity="ok")
-            if self.tray is not None:
-                self.tray.update_profile(profile)
-                self.tray.notify(f"Performance: {profile.label}")
-            self._refresh_async()
-
-        self._run_async(work, done)
-
     def _select_profile(self, profile: ThermalProfile) -> None:
         """Entry point for tray menu actions."""
-        self._profile_var.set(profile.value)
-        self._mark_selected(self._profile_buttons, profile.value)
-        self._on_profile_selected()
-
     def _on_charge_mode_changed(self) -> None:
         self._update_hints()
         self._update_threshold_state()
@@ -1038,6 +953,53 @@ class HelperWindow:
         widget.pack(fill="both", expand=True)
         scrollbar.configure(command=widget.yview)
         self.ttk.Button(popup, text="Close", command=popup.destroy).pack(pady=6)
+
+    def _on_check_updates(self) -> None:
+        """Ask GitHub whether a newer release exists, off the UI thread.
+
+        Only reports. Installing would mean replacing the running executable,
+        which on Windows is the sort of thing that half-succeeds, so the download
+        and the release page are handed to the user instead.
+        """
+        from .. import updates
+
+        def done(result, error) -> None:
+            try:
+                self._update_button.configure(state="normal")
+            except Exception:  # noqa: BLE001
+                pass
+            if error is not None:
+                # "Could not check" is not "up to date"; say which it is.
+                self._set_message(
+                    f"Could not check for updates: {error}", severity="warn"
+                )
+                return
+            if result is None:
+                self._set_message(
+                    f"XPS Helper {C.APP_VERSION} is the latest release.", severity="ok"
+                )
+                return
+            self._set_message(
+                f"Version {result.version} is available. Opening the release page...",
+                severity="ok",
+            )
+            try:
+                import webbrowser
+
+                webbrowser.open(result.url)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not open the release page: %s", exc)
+                self._set_message(
+                    f"Version {result.version} is available: {result.url}",
+                    severity="info",
+                )
+
+        try:
+            self._update_button.configure(state="disabled")
+        except Exception:  # noqa: BLE001
+            pass
+        self._set_message("Checking for updates...", severity="info")
+        self._run_read(updates.check, done)
 
     def _show_doctor(self) -> None:
         from ..doctor import run_doctor

@@ -145,6 +145,55 @@ THERMAL_MODES: dict[str, int] = {
     "Ultra": 0x8,
 }
 
+#: What each mode actually does, with the power limits marked for what they are.
+#:
+#: The firmware does **not** expose per-mode wattages. The USTT reply carries a
+#: mode index and nothing else -- no PL1, no PL2, no power figure anywhere in the
+#: 44-byte frame or the response. So these numbers cannot be read from the machine
+#: and are not measured by this tool.
+#:
+#: They come from ArchWiki's XPS 13 (9370) page, which is the page the 7390 page
+#: defers to for thermal detail, and which states: "'Quiet' and 'Cool Bottom'
+#: profiles limit CPU power to 11W (18W boost) and thus reduces overall system
+#: performance. 'Balanced' and 'Performance' profiles remove this limit."
+#: Shipping 2018-era 9370/7390 hardware shares the same DPTF thermal-table scheme.
+#:
+#: Every value here is therefore *reported*, not measured, and the UI says so.
+#: Treat "no cap" as "the firmware's default limit", which is not unbounded.
+THERMAL_MODE_DETAILS: dict[str, dict[str, str]] = {
+    "Quiet": {
+        "power": "11 W sustained, 18 W boost (reported)",
+        "fans": "slowest -- the quietest option",
+        "effect": "CPU power is capped, so the machine is near-silent but slower "
+                  "and can run warmer.",
+    },
+    "Cool": {
+        "power": "11 W sustained, 18 W boost (reported)",
+        "fans": "faster -- keeps the chassis cooler",
+        "effect": "Same power cap as Quiet, spent on fan speed instead of silence.",
+    },
+    "Balanced": {
+        "power": "no cap (reported) -- firmware default limit",
+        "fans": "firmware default curve",
+        "effect": "Dell's default. Full sustained CPU power with the standard fan "
+                  "curve, and the usual starting point.",
+    },
+    "Ultra": {
+        "power": "no cap (reported) -- firmware default limit",
+        "fans": "loudest under load",
+        "effect": "Removes the power cap for sustained performance; fans run "
+                  "harder and the machine gets warmer.",
+    },
+}
+
+#: Safety net: the wiki notes profile changes do not always take effect.
+THERMAL_MODE_CAVEAT = (
+    "Reported figures, not measurements. The firmware exposes no wattage, so these "
+    "come from documented behaviour for XPS 13 hardware and this tool does not "
+    "measure them. Note that thermal-mode changes do not always alter the CPU power "
+    "limit immediately."
+)
+
 #: Accepted spellings, so callers can say "ultra" or "Ultra Performance".
 THERMAL_MODE_ALIASES: dict[str, int] = {
     "balanced": 0x1,

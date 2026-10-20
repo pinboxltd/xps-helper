@@ -1,5 +1,60 @@
 # Changelog
 
+## v0.4.0
+
+### One thermal control instead of two
+
+The **Performance profile** group has been removed. It drove the same firmware
+setting as **Thermal mode**, but through the `ThermalManagement` BIOS attribute,
+which many models — including this XPS 13 7390 — do not expose at all. Keeping
+both meant one row of buttons that worked and another that was permanently
+greyed, with no way to tell which was which without reading the hint.
+
+Thermal mode stays because it is the Dell ACPI-WMI interface, which is what Dell
+Power Manager itself uses, and it is available on machines where the attribute is
+not. On a model that does expose the attribute, the two were equivalent anyway;
+on this one only the ACPI-WMI path exists.
+
+### Thermal modes now say what they do, in watts
+
+Selecting a mode describes it: the power limit, the fan behaviour, and what the
+combination costs you. `xps-helper thermal` prints the whole table with the active
+mode marked.
+
+The wattages are **reported figures, not measurements**, and the text says so on
+every line. The firmware does not expose per-mode power values: the USTT reply
+carries a mode index and nothing else — no PL1, no PL2, no wattage anywhere in the
+44-byte frame or the response. So the numbers come from ArchWiki's XPS 13 (9370)
+page, which states:
+
+> "Quiet" and "Cool Bottom" profiles limit CPU power to 11W (18W boost) and thus
+> reduces overall system performance. "Balanced" and "Performance" profiles remove
+> this limit.
+
+That page also warns that *"thermal profile changes may not reliably alter the CPU
+power limit"*, which is noted in the caveat rather than hidden — the firmware not
+taking effect is a real behaviour, not a bug in this tool.
+
+### Check for updates
+
+`xps-helper update` and a **Check for updates** button ask GitHub for the newest
+release and report it. It never installs anything: the asset is a zip of two
+executables, and replacing a running Windows binary from inside itself is a good
+way to leave a broken app behind, so the user is handed the release page instead.
+
+Two details worth keeping:
+
+- Version comparison is numeric per component, so `0.3.10` is correctly newer than
+  `0.3.9`. Comparing those as strings says otherwise.
+- "Could not check" is reported as a failure, never as "up to date". Conflating
+  the two tells a user on a broken network that they are current.
+
+### Tests
+
+**443 passed**, 6 skipped. The removed profile group took its GUI tests with it;
+the update checker added 24 covering version ordering, asset parsing, and the
+guarantee that it never downloads or replaces anything.
+
 ## v0.3.1
 
 Three fixes found by actually looking at the running window on the target machine

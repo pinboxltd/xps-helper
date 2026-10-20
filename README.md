@@ -451,20 +451,17 @@ xps-helper doctor
 # 2. Current state.
 xps-helper status
 
-# 3. Performance profile (BIOS attribute; absent on some models).
-xps-helper profile quiet
-
-# 4. Thermal mode (Dell ACPI-WMI; works where the attribute above does not).
-xps-helper thermal            # read
+# 3. Thermal mode (Dell ACPI-WMI) -- the performance setting that matters.
+xps-helper thermal            # read, and describe what each mode does
 xps-helper thermal Quiet      # set
 
-# 5. Cap charging at 80% to extend battery lifespan.
+# 4. Cap charging at 80% to extend battery lifespan.
 xps-helper charge primarily-ac
 
 # ...or pick your own range.
 xps-helper charge custom --start 60 --stop 80
 
-# 6. Tray app.
+# 5. Tray app.
 xps-helper gui
 ```
 
@@ -482,8 +479,9 @@ xps-helper [--backend auto|native|cctk|mock|null] [--config PATH] [--elevate] [-
 | Command | Purpose |
 |---|---|
 | `status [--json] [--watch] [--interval N]` | Profile, charge setting, battery, temperature, fans |
-| `profile [name] [--list] [--json] [--no-verify]` | Get or set the thermal profile |
-| `thermal [mode] [--json]` | Get or set the **Dell ACPI-WMI** thermal mode |
+| `thermal [mode] [--json]` | Get or set the **Dell ACPI-WMI** thermal mode, with per-mode detail |
+| `profile [name] [--list] [--json] [--no-verify]` | Same setting over the `ThermalManagement` BIOS attribute, where it exists |
+| `update [--json]` | Check GitHub for a newer release |
 | `charge [mode] [--start N] [--stop N] [--list] [--json]` | Get or set the charge configuration |
 | `doctor [--json] [--no-raw]` | Diagnose which features work on this machine |
 | `capabilities [--json]` | What the BIOS reports as supported |
