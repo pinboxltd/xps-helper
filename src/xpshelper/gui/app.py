@@ -599,21 +599,6 @@ class HelperWindow:
         self._mark_selected(self._thermal_buttons, name)
         self._on_thermal_mode_selected(name)
 
-    def _select_charge_mode(self, token: str) -> None:
-        """Mark a charge mode without applying it.
-
-        Charge is applied by the explicit button, because the custom thresholds
-        have to be filled in first.
-        """
-        self._charge_var.set(token)
-        self._mark_selected(self._charge_buttons, token)
-        try:
-            mode = ChargeMode(token)
-        except ValueError:
-            return
-        self._mark_selected(self._charge_buttons, mode)
-        self._on_charge_mode_changed()
-
     def _disable_thermal_group(self) -> None:
         for button in self._thermal_buttons.values():
             try:
@@ -902,16 +887,49 @@ class HelperWindow:
 
     # -- actions ----------------------------------------------------------
     def _select_profile(self, profile: ThermalProfile) -> None:
-        """Entry point for tray menu actions."""
+        """Apply a thermal profile. Entry point for tray menu actions.
+
+        The window no longer has a profile group -- the setting lives behind the
+        ``ThermalManagement`` BIOS attribute, which many models do not expose --
+        but the tray menu still offers it for machines that do, so this applies it
+        through the service and reports the outcome rather than failing silently.
+        """
+        token = getattr(profile, "value", profile)
+        try:
+            target = ThermalProfile.from_token(str(token))
+        except Exception:  # noqa: BLE001
+            return
+        if target is None:
+            return
+
+        def done(result, error) -> None:
+            if error is not None:
+                self._set_message(f"Could not set {target.label}: {error}", severity="error")
+                return
+            self._set_message(f"Applied thermal profile: {target.label}.", severity="ok")
+
+        self._run_async(lambda: self.service.set_profile(target), done)
+
     def _on_charge_mode_changed(self) -> None:
         self._update_hints()
         self._update_threshold_state()
 
-    def _select_charge_mode(self, mode: ChargeMode) -> None:
-        self._charge_var.set(mode.value)
-        self._mark_selected(self._charge_buttons, mode)
+    def _select_charge_mode(self, mode) -> None:
+        """Select a charge mode; apply it when it needs no thresholds.
+
+        Accepts either a ``ChargeMode`` or its string value: the buttons pass
+        strings and the tray passes enums. There used to be two definitions of
+        this method, one per caller, and the later one silently won -- so the
+        buttons raised ``'str' object has no attribute 'value'``.
+        """
+        try:
+            target = mode if isinstance(mode, ChargeMode) else ChargeMode(str(mode))
+        except ValueError:
+            return
+        self._charge_var.set(target.value)
+        self._mark_selected(self._charge_buttons, target)
         self._on_charge_mode_changed()
-        if not mode.needs_thresholds:
+        if not target.needs_thresholds:
             self._on_apply_charge()
 
     def _on_apply_charge(self) -> None:

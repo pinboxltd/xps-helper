@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.6.1
+
+### The charge buttons did nothing
+
+Clicking any charge mode logged
+
+```
+WARNING xpshelper.gui.widgets: mode button callback failed:
+'str' object has no attribute 'value'
+```
+
+and the setting was not applied.
+
+`HelperWindow` defined `_select_charge_mode` **twice** -- one taking a string for
+the buttons, one taking a `ChargeMode` for the tray menu. Python keeps the last
+definition, so the buttons reached the enum-only version and it called `.value` on
+a string. Both definitions were individually valid, the module compiled, and the
+broken path only ran when someone clicked.
+
+The same edit that duplicated that method also stripped the body from
+`_select_profile`, leaving a docstring and nothing else -- which is not a syntax
+error, just a method that silently does nothing. Both are repaired: one
+`_select_charge_mode` accepts either a `ChargeMode` or its string value, and
+`_select_profile` applies through the service again for machines that expose the
+attribute.
+
+### Tests
+
+**471 passed**, 6 skipped. The new tests are structural, because the bug was
+structural: they assert `HelperWindow` defines no method twice, that no method is
+left with an empty body, and that `_select_charge_mode` accepts both the strings
+the buttons pass and the enums the tray passes.
+
 ## v0.6.0
 
 ### Temperature sensors, found
