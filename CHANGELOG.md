@@ -1,5 +1,76 @@
 # Changelog
 
+## v0.5.0
+
+### Administrator rights are baked into the executable
+
+The packaged `xps-helper.exe` now carries a manifest requesting
+`requireAdministrator`, so Windows elevates it at launch instead of the program
+discovering halfway through a write that it is not allowed to.
+
+Nearly everything this tool does needs elevation: setting the thermal mode over
+ACPI-WMI, writing a BIOS attribute, and registering the privileged helper. The
+previous design ran unelevated and delegated privileged work to a scheduled task,
+which avoided repeat prompts but meant a first-time user met the requirement as a
+failed write rather than as an up-front prompt.
+
+Verified in the built binary:
+
+```xml
+<requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+```
+
+The cost is stated plainly rather than buried: a UAC prompt now appears on **every**
+launch. Running from an already-elevated shell does not re-prompt. The scheduled-task
+helper is still supported for source installs and for anyone who prefers it, and the
+app skips it when it is already elevated.
+
+### It says which mode it is in
+
+The window shows an explicit line under the header:
+
+```
+administrator: yes (settings can be changed)
+administrator: NO -- BIOS and thermal writes will be refused. Restart the app and
+accept the prompt.
+```
+
+Showing this beats assuming it: an unelevated process cannot write the thermal mode,
+and a user staring at a disabled button deserves to know why. `doctor` says the same
+in words, and now points at the manifest rather than telling people to find
+`--elevate` first.
+
+## v0.4.1
+
+### One file to download, not a zip
+
+The release asset is now **xps-helper.exe** -- a single self-contained file. The
+previous asset was a zip of a 45 MB folder holding two executables and an
+`_internal` directory, so using the program meant unzipping it first.
+
+There is one executable now instead of two. Windows decides whether to allocate a
+console when a process starts, and that cannot be changed afterwards, so a single
+binary has to be a console program: a windowed one could never print CLI output.
+`packaging/entry_app.py` therefore picks what to run from how it was started --
+no arguments opens the window, any arguments run the CLI, and
+`-m xpshelper.elevated_run` is still the privileged child the scheduled task
+starts.
+
+No arguments means the window, **unconditionally**. An earlier attempt tried to
+tell a double-click from a shell launch with `GetConsoleProcessList`, which is the
+usual trick and was not dependable here: it answered "shared console" even for
+launches that did create their own, so the program printed help and closed instead
+of opening. Being predictable beats being clever.
+
+The tradeoff, recorded because it is real: a one-file build unpacks itself into a
+temporary directory on **every** launch, so starting costs a few hundred
+milliseconds more than the folder build did. For a settings app you open once and
+leave running, that is a fair trade for not unzipping anything.
+
+`packaging/xpshelper.spec`, `entry_cli.py` and `entry_gui.py` are removed; the
+single-file spec supersedes them. `install-autostart.ps1` now takes one path
+instead of two.
+
 ## v0.4.0
 
 ### One thermal control instead of two

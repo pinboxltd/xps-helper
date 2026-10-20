@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xps-helper"
-version = "0.4.0"
+version = "0.5.0"
 description = "G-Helper-style thermal profile and battery charge control for Dell XPS laptops"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }

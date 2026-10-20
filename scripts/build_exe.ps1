@@ -1,18 +1,13 @@
-# Build the distributable executables.
+# Build the single-file executable.
 #
-#   pwsh -File scripts/build_exe.ps1
+#   powershell -File scripts/build_exe.ps1
 #
-# Produces dist/xps-helper/ containing:
-#   xps-helper.exe       console build (CLI output and exit codes work)
-#   xps-helper-gui.exe   windowed build (no console flash; used for autostart)
+# Produces dist/xps-helper.exe -- one self-contained file, no folder and no zip.
+# Double-clicking it opens the window; running it with arguments runs the CLI.
 #
-# IMPORTANT: only files under dist/ are runnable. PyInstaller also leaves a copy
-# of the executable in build/<name>/, and that copy is a scratch artefact: it has
-# no _internal/ directory beside it, so launching it fails with
-#
-#     Failed to load Python DLL ... LoadLibrary: The specified module could not be found.
-#
-# which looks like a broken build but only means the wrong file was run.
+# A one-file build unpacks itself into a temp directory on every launch, so the
+# first start costs a little longer than the old folder build. That is the price
+# of shipping one file instead of a 45 MB folder, and it is recorded in the spec.
 param(
     [switch]$SkipTests,
     [switch]$Clean
@@ -38,38 +33,72 @@ try {
         Remove-Item (Join-Path $root 'build'), (Join-Path $root 'dist') -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    Write-Host '== pyinstaller ==' -ForegroundColor Cyan
-    & $python -m PyInstaller packaging\xpshelper.spec --noconfirm --clean
+    Write-Host '== pyinstaller (one file) ==' -ForegroundColor Cyan
+    & $python -m PyInstaller packaging\xpshelper_onefile.spec --noconfirm --clean
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
 
-    # Drop a marker in the scratch directory so nobody tries to run it.
-    $trap = Join-Path $root 'build\xpshelper'
+    Write-Host '== smoke test ==' -ForegroundColor Cyan
+    $exe = Join-Path $root 'dist\xps-helper.exe'
+    if (-not (Test-Path $exe)) { throw "No executable at $exe" }
+
+    # The executable now carries a requireAdministrator manifest, so it cannot be
+    # started from an unelevated shell at all -- Windows declines to launch it and
+    # there is nothing to catch. Check the manifest rather than pretending to run
+    # it, and only do the runtime checks when this shell is already elevated.
+    $bytes = [IO.File]::ReadAllBytes($exe)
+    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    if (-not $text.Contains('requireAdministrator')) {
+        throw 'The built executable does not request administrator rights.'
+    }
+    Write-Host '  manifest: requireAdministrator (present)'
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    if ($elevated) {
+        & $exe --version
+        if ($LASTEXITCODE -ne 0) { throw 'The built executable does not run.' }
+
+        # The privileged child is dispatched with -m, which a frozen exe must
+        # interpret itself. With no pending request it fails by design, and it
+        # writes that failure to stderr -- which `$ErrorActionPreference = 'Stop'`
+        # would turn into a thrown NativeCommandError. Relax it for this probe.
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $exe -m xpshelper.elevated_run 2>&1 | Out-Null
+            $dispatchCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previous
+        }
+        if ($dispatchCode -eq 0) { throw '-m dispatch did not behave as a privileged child.' }
+        Write-Host '  runtime: --version and -m dispatch both verified'
+    }
+    else {
+        Write-Host '  runtime: SKIPPED -- this shell is not elevated, and the' -ForegroundColor Yellow
+        Write-Host '           executable requires administrator rights to start.' -ForegroundColor Yellow
+        Write-Host '           Launch it yourself, or run this script elevated.' -ForegroundColor Yellow
+    }
+
+    # The scratch copy in build/ is not runnable on its own in a onedir build; in
+    # a onefile build there is no folder to confuse, but leave a note anyway in
+    # case an old onedir build is inspected.
+    $trap = Join-Path $root 'build'
     if (Test-Path $trap) {
         @'
-These executables are PyInstaller build artefacts and DO NOT RUN.
+Anything here is a PyInstaller build artefact, not the program.
 
-They have no _internal/ directory beside them, so launching one fails with
-"Failed to load Python DLL ... LoadLibrary: The specified module could not be found."
-
-Run the copies in dist\xps-helper\ instead.
+Run dist\xps-helper.exe instead -- that is the single self-contained file.
 '@ | Set-Content (Join-Path $trap 'DO-NOT-RUN.txt') -Encoding utf8
     }
 
-    Write-Host '== smoke test ==' -ForegroundColor Cyan
-    $cli = Join-Path $root 'dist\xps-helper\xps-helper.exe'
-    if (-not (Test-Path $cli)) { throw "No executable at $cli" }
-    if (-not (Test-Path (Join-Path $root 'dist\xps-helper\_internal'))) {
-        throw 'dist build is missing _internal/ and will not run.'
-    }
-    & $cli --version
-    if ($LASTEXITCODE -ne 0) { throw 'The built executable does not run.' }
-
+    $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
     Write-Host ''
-    Write-Host 'Built and verified:' -ForegroundColor Green
-    Get-ChildItem (Join-Path $root 'dist\xps-helper') -Filter *.exe |
-        ForEach-Object { Write-Host ("  {0}  ({1:N1} MB)" -f $_.Name, ($_.Length / 1MB)) }
+    Write-Host ("Built and verified: dist\xps-helper.exe  ({0:N1} MB)" -f $size) -ForegroundColor Green
     Write-Host ''
-    Write-Host 'Run dist\xps-helper\xps-helper.exe (CLI) or xps-helper-gui.exe (window).' -ForegroundColor Green
+    Write-Host 'Double-click it for the window, or run it with arguments for the CLI.' -ForegroundColor Green
 }
 finally {
     Pop-Location

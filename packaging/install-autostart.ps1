@@ -31,18 +31,20 @@
     Remove the tasks created by this script.
 
 .EXAMPLE
-    .\install-autostart.ps1 -GuiPath "C:\Tools\xps-helper\xps-helper-gui.exe"
+    .\install-autostart.ps1 -GuiPath "C:\Tools\xps-helper.exe"
 
 .EXAMPLE
-    .\install-autostart.ps1 -GuiPath .\dist\xps-helper\xps-helper-gui.exe `
-                            -CliPath .\dist\xps-helper\xps-helper.exe -ApplyOnUnlock
+    .\install-autostart.ps1 -GuiPath .\dist\xps-helper.exe -ApplyOnUnlock
 
 .EXAMPLE
     .\install-autostart.ps1 -Uninstall
 #>
 [CmdletBinding()]
 param(
+    # The single executable. Since v0.4.0 there is one file, not two: the same
+    # binary opens the window with no arguments and runs the CLI with arguments.
     [string]$GuiPath,
+    # Optional and normally unnecessary -- defaults to -GuiPath.
     [string]$CliPath,
     [string]$TaskName = 'XPS Helper',
     [switch]$ApplyOnUnlock,
@@ -121,9 +123,9 @@ Register-ScheduledTask `
 Write-Host "Registered scheduled task: $TaskName (at logon, highest privileges)"
 
 if ($ApplyOnUnlock) {
-    if (-not $CliPath) {
-        throw "-ApplyOnUnlock also needs -CliPath pointing at xps-helper.exe."
-    }
+    # One file since v0.4.0: the executable runs the CLI when given arguments, so
+    # -CliPath only matters for an older two-file build.
+    if (-not $CliPath) { $CliPath = $GuiPath }
     $cliExe = Resolve-Executable $CliPath 'xps-helper.exe'
     Write-Host "CLI executable: $cliExe"
 

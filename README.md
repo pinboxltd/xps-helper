@@ -246,9 +246,8 @@ binaries.
 
 ### Setting up on a machine that has never run this
 
-The executables are self-contained — copy `dist\xps-helper\` anywhere and
-`xps-helper.exe` runs, with no Python and no Dell software installed. Two things
-need doing once:
+The executable is self-contained — copy `dist\xps-helper.exe` anywhere and it
+runs, with no Python and no Dell software installed. Two things need doing once:
 
 ```powershell
 # 1. Check what this machine supports (no elevation, changes nothing).
@@ -389,14 +388,31 @@ Optional, and **not Dell software**:
 
 ### Option A — prebuilt .exe (recommended)
 
-Download `xps-helper-windows.zip` from the repository's **Releases** page and
-unzip it. You get:
+Download **`xps-helper.exe`** from the repository's **Releases** page. That is the
+whole download: one file, no folder, no zip to unpack. It is built by GitHub
+Actions on a Windows runner, so no Python is needed on your machine.
 
-- `xps-helper.exe` — CLI
-- `xps-helper-gui.exe` — tray GUI (no console window)
+> **It asks for administrator rights, every time you launch it.** That is baked
+> into the executable's manifest, not something you have to arrange. Changing the
+> thermal mode, writing a BIOS attribute and registering the privileged helper all
+> require elevation, so the program asks up front and then works.
 
-The executables are built by GitHub Actions on a Windows runner, so no Python is
-needed on your machine.
+- **Double-click** it for the tray/window interface.
+- **Run it with arguments** for the command line:
+
+  ```powershell
+  .\xps-helper.exe --help
+  .\xps-helper.exe thermal Quiet
+  ```
+
+Because of the manifest, each launch shows a UAC prompt. Running the same command
+from an already-elevated shell does not prompt again. If you would rather not see
+the prompt at all, install the privileged helper once and use the source install,
+which runs unelevated and delegates.
+
+A one-file build unpacks itself to a temporary directory on each launch, so the
+first start takes a moment longer than a folder build would. That is the trade for
+not having to unzip anything.
 
 ### Option B — run from source
 
@@ -415,30 +431,24 @@ python -m xpshelper doctor
 ### Option C — build the .exe yourself
 
 ```powershell
-pwsh -File scripts/build_exe.ps1            # runs the tests, builds, smoke-tests
-pwsh -File scripts/build_exe.ps1 -Clean     # also wipe build/ and dist/ first
+powershell -File scripts/build_exe.ps1            # tests, build, smoke-test
+powershell -File scripts/build_exe.ps1 -Clean     # also wipe build/ and dist/
 ```
 
 Or drive PyInstaller directly:
 
 ```powershell
 pip install pyinstaller
-pyinstaller packaging/xpshelper.spec --noconfirm
+pyinstaller packaging/xpshelper_onefile.spec --noconfirm
 ```
 
-Either way, **only run what is in `dist\xps-helper\`.**
+Either way the output is a single file: **`dist\xps-helper.exe`**.
 
-> **Do not run `build\xpshelper\xps-helper.exe`.** PyInstaller leaves a copy of the
-> executable in `build\`, and it is a scratch artefact: there is no `_internal\`
-> directory beside it, so launching it fails with
->
-> ```
-> Failed to load Python DLL '...\build\xpshelper\_internal\python312.dll'.
-> LoadLibrary: The specified module could not be found.
-> ```
->
-> That message looks like a broken build but only means the wrong file was run. The
-> build script drops a `DO-NOT-RUN.txt` in that directory for this reason.
+> **Do not run anything under `build\`.** That directory holds PyInstaller's
+> scratch artefacts. In a one-file build they are not the program, and running
+> them fails with *"Failed to load Python DLL"*, which looks like a broken build
+> but only means the wrong file was run. The build script leaves a
+> `DO-NOT-RUN.txt` there for this reason.
 
 ---
 
@@ -534,11 +544,10 @@ xps-helper gui
 
 ```powershell
 # elevated PowerShell
-.\packaging\install-autostart.ps1 -GuiPath .\dist\xps-helper\xps-helper-gui.exe
+.\packaging\install-autostart.ps1 -GuiPath .\dist\xps-helper.exe
 
 # also re-apply saved settings on unlock
-.\packaging\install-autostart.ps1 -GuiPath .\dist\xps-helper\xps-helper-gui.exe `
-                                  -CliPath .\dist\xps-helper\xps-helper.exe -ApplyOnUnlock
+.\packaging\install-autostart.ps1 -GuiPath .\dist\xps-helper.exe -ApplyOnUnlock
 
 .\packaging\install-autostart.ps1 -Uninstall
 ```

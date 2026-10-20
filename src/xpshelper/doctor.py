@@ -227,14 +227,17 @@ def run_doctor(service: XpsHelper, *, include_raw: bool = True) -> DoctorReport:
         elif denied:
             privileges = (
                 "Not elevated, and the BIOS interface is refusing access because of "
-                "it. Run 'xps-helper --elevate <command>' (or the GUI, which offers "
-                "to elevate) to actually change settings. Reads of battery and "
-                "sensors work without it."
+                "it. Administrator rights are required to change settings: the "
+                "packaged xps-helper.exe asks for them in its manifest, so launching "
+                "it normally and accepting the prompt is enough. From source, run "
+                "'xps-helper --elevate <command>'. Reads of battery and sensors "
+                "work without it."
             )
         else:
             privileges = (
-                "Not elevated. Reading works, but *writing* BIOS settings needs "
-                "administrator rights (or sudo on Linux)."
+                "Not elevated. Reading works, but *writing* needs administrator "
+                "rights. The packaged xps-helper.exe requests them at launch; from "
+                "source use 'xps-helper --elevate <command>' (or sudo on Linux)."
             )
         report.add("Privileges", OK if elevated else WARN, privileges)
 

@@ -184,7 +184,22 @@ class HelperWindow:
             fg=p.fore_dim,
             font=("Segoe UI", 8),
             anchor="w",
-        ).pack(fill="x", pady=(0, theme.GROUP_GAP))
+        ).pack(fill="x")
+
+        # Elevation state, stated plainly. The packaged executable asks for
+        # administrator rights in its manifest, so this should always read
+        # "administrator"; seeing "standard user" means something went wrong and
+        # BIOS writes will be refused.
+        self._privilege_label = tk.Label(
+            outer,
+            text="",
+            bg=p.form_back,
+            fg=p.fore_dim,
+            font=("Segoe UI", 8),
+            anchor="w",
+        )
+        self._privilege_label.pack(fill="x", pady=(0, theme.GROUP_GAP))
+        self._update_privilege_label()
 
         # -- thermal mode (Dell ACPI-WMI) ---------------------------------
         #
@@ -438,6 +453,38 @@ class HelperWindow:
         if self.service.is_dell is False:
             return "Not a Dell system (monitoring only)"
         return "System"
+
+    def _update_privilege_label(self) -> None:
+        """Show whether this process is running with administrator rights.
+
+        The packaged executable requests elevation in its manifest, so a normal
+        launch is already elevated and this reads "administrator". It is shown
+        rather than assumed: an unelevated process cannot write the thermal mode
+        or a BIOS attribute, and the user deserves to know which they are looking
+        at before a button does nothing.
+        """
+        try:
+            from ..elevate import is_elevated
+
+            elevated = is_elevated()
+        except Exception:  # noqa: BLE001
+            elevated = None
+        if elevated is True:
+            text = "administrator: yes (settings can be changed)"
+            colour = "#3c763d"
+        elif elevated is False:
+            text = (
+                "administrator: NO -- BIOS and thermal writes will be refused. "
+                "Restart the app and accept the prompt."
+            )
+            colour = "#a94442"
+        else:
+            text = "administrator: unknown"
+            colour = self.palette.fore_dim
+        try:
+            self._privilege_label.configure(text=text, fg=colour)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _wire_tray(self, use_tray: bool) -> None:
         self.tray = None
