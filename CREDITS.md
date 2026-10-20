@@ -1,5 +1,26 @@
 # Credits and attribution
 
+## The DPTF temperature source
+
+Unlike most of the interface knowledge above, this one was worked out on the
+machine itself rather than taken from another project, so it is recorded here as a
+finding rather than a debt.
+
+Three sources were ruled out first: `MSAcpi_ThermalZoneTemperature` reports "Not
+supported"; the SMBIOS type 28 probes exposed by `Win32_TemperatureProbe` describe
+the sensors but carry no reading; and `DCIM_NumericSensor` needs Dell Command |
+Monitor. Dell's own assemblies were then read: `SmbLib` parses SMBIOS
+`TemperatureProbe` tables (type 28 enum = 28) and exposes `GetThermalInformation`
+alongside the USTT commands, which confirmed Dell gets no live value from SMBIOS
+either.
+
+The live source is `root\wmi :: EsifDeviceInformation`, published by the
+"Intel(R) Dynamic Tuning Processor Participant" device. Undocumented for
+user-mode consumption, discovered by enumerating WMI classes that expose a
+`Temperature` property and testing which ones return data. It requires elevation,
+and its zones carry no participant names.
+
+
 XPS Helper is an independent Python re-implementation. It is **not** a fork, and
 no source code was copied verbatim. However, a large part of its value comes from
 interface knowledge that other people worked out first and published. That debt is

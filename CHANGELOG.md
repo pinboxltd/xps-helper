@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.6.0
+
+### Temperature sensors, found
+
+The app said "No temperature sensors found" on a machine that plainly has them.
+Working out where the readings live meant ruling out three sources that look
+right and are not:
+
+| Source | What it does here |
+|---|---|
+| `MSAcpi_ThermalZoneTemperature` | Answers **Not supported**. |
+| `Win32_TemperatureProbe` (SMBIOS type 28) | Six probes -- one `CPU`, two `DIMM A`, three `SKIN` -- that **never carry a reading**. Type 28 describes a probe and has no current-value field, which is exactly why `CurrentReading` is null. |
+| `root/dcim/sysman :: DCIM_NumericSensor` | Needs Dell Command \| Monitor, which is not installed. |
+
+The source that works is **`root\wmi :: EsifDeviceInformation`**, published by the
+"Intel(R) Dynamic Tuning Processor Participant" device. It exposes one entry per
+Intel DPTF thermal zone with a temperature, a per-zone power and trip points. On
+this laptop that is nine zones, of which eight report a value:
+
+```
+DPTF zone 7 (134 mW)   61.0 C
+DPTF zone 8 (9 mW)     61.0 C
+DPTF zone 6 (164 mW)   54.0 C
+DPTF zone 4            41.0 C
+DPTF zone 0            38.0 C
+...
+```
+
+Two details that matter:
+
+- **It returns nothing at all unless elevated** -- an empty set, not an error.
+  That is why the sensors looked absent rather than inaccessible. The packaged
+  executable is elevated by its manifest; a source run reaches it through the
+  privileged helper, via the new `sensors --esif-only` child command.
+- **The zones are unnamed.** The firmware gives an instance name and an index,
+  not "CPU" or "SKIN"; the participant names live in the DPTF policy
+  configuration, which is not exposed over WMI. They are labelled `DPTF zone N`
+  rather than guessed at, and zones reporting 0 C -- the unused-zone sentinel --
+  are dropped.
+
+### Added
+
+- `xps-helper sensors [--json]` lists every sensor, hottest first.
+- `status` and `doctor` report the real readings instead of "unavailable".
+- The "install Dell Command | Monitor" advice is gone. It was never the
+  requirement; elevation was.
+
+### Tests
+
+**458 passed**, 6 skipped. New tests cover the zone parsing: hottest-first
+ordering, the 0 C sentinel, power in the label, labelling by index, DPTF winning
+over the ACPI fallback, and that the older sources are still queried for
+machines that have them.
+
 ## v0.5.1
 
 ### The window was wrong about being elevated

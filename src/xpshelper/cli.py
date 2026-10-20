@@ -262,6 +262,57 @@ def _cmd_internal_thermal(args: argparse.Namespace, service: XpsHelper) -> int:
     return EXIT_OK
 
 
+def _cmd_sensors(args: argparse.Namespace, service: XpsHelper) -> int:
+    """Report the temperature sensors.
+
+    On this class of machine the only live source is the Intel DPTF zones in
+    ``root\\wmi :: EsifDeviceInformation``, which return data **only when
+    elevated**. The packaged executable is elevated by its manifest; a source run
+    reaches this through the privileged helper, which is what ``--esif-only``
+    exists for -- it keeps the helper's job to one query.
+    """
+    if args.esif_only:
+        from .backends.wmi import WmiTelemetryBackend
+
+        backend = WmiTelemetryBackend()
+        backend.refresh()
+        # refresh() may have used the helper already; read the cache directly so
+        # --esif-only cannot recurse.
+        raw = backend._snapshot()  # noqa: SLF001 - same package
+        print(json.dumps({"esif_zones": list(raw.esif_zones)}))
+        return EXIT_OK
+
+    try:
+        readings = service.telemetry.read_temperatures()
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: could not read temperatures: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.json:
+        _print_json(
+            {
+                "sensors": [
+                    {"name": r.name, "celsius": r.celsius, "source": r.source}
+                    for r in readings
+                ]
+            }
+        )
+        return EXIT_OK
+
+    if not readings:
+        print("No temperature sensors reported a value.")
+        print(
+            "Reading them needs administrator rights: EsifDeviceInformation returns "
+            "nothing unelevated."
+        )
+        return EXIT_OK
+
+    print(f"{len(readings)} temperature sensor(s), hottest first:")
+    for reading in readings:
+        print(f"  {reading.name:<30} {reading.celsius:6.1f} C   ({reading.source})")
+    return EXIT_OK
+
+
 def _cmd_update(args: argparse.Namespace, service: XpsHelper) -> int:
     """Check GitHub for a newer release, and offer the download link.
 
@@ -771,6 +822,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     update.add_argument("--json", action="store_true", help="Emit JSON.")
     update.set_defaults(func=_cmd_update)
+
+    sensors = subparsers.add_parser(
+        "sensors", parents=[_make_common(suppressed=True)],
+        help="Report temperature sensors (Intel DPTF zones).",
+    )
+    sensors.add_argument("--json", action="store_true", help="Emit JSON.")
+    sensors.add_argument(
+        "--esif-only", action="store_true",
+        help="Internal: print only the raw DPTF zones, for the privileged child.",
+    )
+    sensors.set_defaults(func=_cmd_sensors)
 
     # Hidden: the privileged helper's entry point for thermal work. Not listed in
     # help, and it takes no service, because it runs in the elevated child. The

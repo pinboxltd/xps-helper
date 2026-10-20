@@ -302,8 +302,10 @@ def run_doctor(service: XpsHelper, *, include_raw: bool = True) -> DoctorReport:
         report.add(
             "Temperatures",
             WARN,
-            "No temperature sensors found. On Windows, install Dell Command | Monitor "
-            "or run LibreHardwareMonitor for CPU package temperatures.",
+            "No temperature sensor returned a value. Reading them needs "
+            "administrator rights: the Intel DPTF zones "
+            "(root\\wmi :: EsifDeviceInformation) are empty unelevated. The "
+            "packaged xps-helper.exe requests elevation at launch.",
         )
 
     fans = []

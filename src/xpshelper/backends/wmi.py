@@ -71,6 +71,17 @@ try {
     Select-Object InstanceName, CurrentTemperature)
 } catch { }
 
+# Intel DPTF thermal zones. On this class of machine MSAcpi_ThermalZoneTemperature
+# reports "Not supported", while EsifDeviceInformation -- published by
+# "Intel(R) Dynamic Tuning Processor Participant" -- carries real temperatures and
+# per-zone power. This is the only live temperature source; see docs in
+# temperatures_from_telemetry.
+$out.esif_zones = @()
+try {
+  $out.esif_zones = @(Get-CimInstance -Namespace 'root/wmi' -ClassName 'EsifDeviceInformation' |
+    Select-Object InstanceName, Temperature, Power, Ac0TripPoint, Ac1TripPoint, CrtTripPoint, Active)
+} catch { }
+
 $out | ConvertTo-Json -Compress -Depth 4
 """
 
@@ -85,6 +96,8 @@ class RawTelemetry:
     dcim_sensors: list[dict[str, Any]] = field(default_factory=list)
     lhm_sensors: list[dict[str, Any]] = field(default_factory=list)
     acpi_thermal: list[dict[str, Any]] = field(default_factory=list)
+    #: Intel DPTF thermal zones from ``root\wmi :: EsifDeviceInformation``.
+    esif_zones: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _as_list(value: Any) -> list[dict[str, Any]]:
@@ -135,6 +148,7 @@ def parse_telemetry_json(payload: str) -> RawTelemetry:
         dcim_sensors=_as_list(data.get("dcim_sensors")),
         lhm_sensors=_as_list(data.get("lhm_sensors")),
         acpi_thermal=_as_list(data.get("acpi_thermal")),
+        esif_zones=_as_list(data.get("esif_zones")),
     )
 
 
@@ -253,6 +267,35 @@ def temperatures_from_telemetry(raw: RawTelemetry) -> list[TemperatureReading]:
     if readings:
         return readings
 
+    # Intel DPTF thermal zones. This is the source that actually reports live
+    # values on an XPS 13 7390: MSAcpi_ThermalZoneTemperature answers
+    # "Not supported" on this platform, and the SMBIOS temperature probes
+    # (Win32_TemperatureProbe: CPU, DIMM A x2, SKIN x3) describe the sensors but
+    # never carry a reading -- SMBIOS type 28 has no current-value field.
+    #
+    # EsifDeviceInformation is published by "Intel(R) Dynamic Tuning Processor
+    # Participant" and exposes one entry per DPTF thermal zone. The zones are
+    # *not named*: the firmware gives an instance name and an index, not "CPU" or
+    # "SKIN", so they are labelled by index rather than guessed at. Zones
+    # reporting 0 C are unused and are dropped -- 0 is a sentinel, not a reading.
+    zones: list[TemperatureReading] = []
+    for index, entry in enumerate(raw.esif_zones):
+        celsius = _float(entry.get("Temperature"))
+        if celsius is None or celsius <= 0:
+            continue
+        power = _float(entry.get("Power"))
+        label = f"DPTF zone {index}"
+        if power:
+            label += f" ({power:.0f} mW)"
+        zones.append(
+            TemperatureReading(name=label, celsius=celsius, source="wmi:dptf")
+        )
+    if zones:
+        # Hottest first: the first reading is what the UI shows as "the"
+        # temperature, and on this machine that is the CPU-side zone.
+        zones.sort(key=lambda reading: reading.celsius, reverse=True)
+        return zones
+
     for entry in raw.acpi_thermal:
         raw_value = _float(entry.get("CurrentTemperature"))
         if raw_value is None:
@@ -306,7 +349,46 @@ class WmiTelemetryBackend:
             return RawTelemetry()
 
         self.last_error = None
-        return parse_telemetry_json(proc.stdout)
+        raw = parse_telemetry_json(proc.stdout)
+        self._fill_esif_if_missing(raw)
+        return raw
+
+    def _fill_esif_if_missing(self, raw: "RawTelemetry") -> None:
+        """Re-read the Intel DPTF zones through the privileged helper.
+
+        ``EsifDeviceInformation`` returns **nothing at all** unless the caller is
+        elevated -- not an error, just an empty set. That is why the temperatures
+        were missing on a machine that clearly has sensors.
+
+        The packaged executable is elevated by its manifest, so this is only for
+        source runs; it costs one extra call there and nothing when the first
+        query already answered.
+        """
+        if raw.esif_zones:
+            return
+        try:
+            from .. import privileged as priv
+            from ..elevate import is_elevated
+
+            if is_elevated() or not priv.is_installed() or priv.is_privileged_child():
+                return
+            result = priv.run_via_helper(
+                priv.self_invocation(["sensors", "--json", "--esif-only"])
+            )
+            if not result.ok:
+                return
+            payload = None
+            for line in reversed((result.stdout or "").splitlines()):
+                if line.lstrip().startswith("{"):
+                    payload = line
+                    break
+            if payload is None:
+                return
+            zones = json.loads(payload).get("esif_zones")
+            if zones:
+                raw.esif_zones = list(zones)
+        except Exception as exc:  # noqa: BLE001 - sensors must never break status
+            log.debug("ESIF fallback through the helper failed: %s", exc)
 
     def _snapshot(self) -> RawTelemetry:
         if self._cache is None:
@@ -336,10 +418,12 @@ class WmiTelemetryBackend:
             notes.append(f"WMI read problem: {self.last_error}")
         if not raw.battery and not raw.battery_static:
             notes.append("No battery information was returned by WMI.")
-        if not raw.dcim_sensors and not raw.lhm_sensors and not raw.acpi_thermal:
+        if not raw.esif_zones and not raw.dcim_sensors and not raw.lhm_sensors and not raw.acpi_thermal:
             notes.append(
-                "No temperature sensors found. Install Dell Command | Monitor or run "
-                "LibreHardwareMonitor for CPU temperatures."
+                "No temperature sensors returned a value. This needs administrator "
+                "rights: the Intel DPTF zones (root\\wmi :: EsifDeviceInformation) "
+                "are empty when read unelevated. Dell Command | Monitor or "
+                "LibreHardwareMonitor are alternatives, not requirements."
             )
         if not any(_dcim_is_fan(e) for e in raw.dcim_sensors):
             notes.append(
