@@ -47,6 +47,58 @@ def test_is_elevated_prefers_the_process_token_over_group_membership():
     assert "IsUserAnAdmin" not in source
 
 
+def test_is_elevated_agrees_with_is_user_an_admin():
+    """Regression: the two disagreed, and is_elevated was the wrong one.
+
+    On real hardware the window said "administrator: NO" while the process was
+    genuinely elevated, because ``GetCurrentProcess()`` was called with ctypes'
+    default 32-bit return type. That truncates the pseudo-handle,
+    ``OpenProcessToken`` rejects it, and the function quietly answered False.
+
+    When elevated, both checks must agree; when not, neither may claim otherwise.
+    """
+    import ctypes
+
+    if sys.platform != "win32":
+        pytest.skip("Windows-specific elevation probe")
+    assert elevate.is_elevated() == bool(ctypes.windll.shell32.IsUserAnAdmin())
+
+
+def test_get_current_process_is_declared_as_a_handle():
+    """The declarations are the fix, so assert they are present.
+
+    Checked in the source rather than against a live ``WinDLL`` object:
+    ``ctypes.WinDLL("kernel32")`` returns a fresh wrapper each time, so a
+    declaration made inside ``is_elevated`` is not visible on another instance.
+    """
+    import inspect
+
+    source = inspect.getsource(elevate.is_elevated)
+    assert "GetCurrentProcess.restype" in source
+    assert "OpenProcessToken.argtypes" in source
+    assert "GetTokenInformation.argtypes" in source
+
+
+def test_is_elevated_falls_back_instead_of_claiming_not_elevated(monkeypatch):
+    """A failed token query must not be reported as "not elevated"."""
+    import ctypes
+
+    if sys.platform != "win32":
+        pytest.skip("Windows-specific elevation probe")
+    expected = bool(ctypes.windll.shell32.IsUserAnAdmin())
+
+    real_windll = ctypes.windll
+
+    class Broken:
+        def __getattr__(self, name):  # pragma: no cover - always raises
+            raise OSError("token query unavailable")
+
+    monkeypatch.setattr(
+        ctypes, "windll", type("W", (), {"shell32": real_windll.shell32, "advapi32": Broken()})()
+    )
+    assert elevate.is_elevated() is expected
+
+
 # ---------------------------------------------------------------------------
 # Relaunch command construction
 # ---------------------------------------------------------------------------

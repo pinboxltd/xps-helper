@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.5.1
+
+### The window was wrong about being elevated
+
+Reported from the real thing: the executable prompted for administrator rights,
+the prompt was accepted, and the window still said
+
+```
+administrator: NO -- BIOS and thermal writes will be refused.
+```
+
+The app *was* elevated. `is_elevated()` was returning False regardless, because
+`GetCurrentProcess()` was called through ctypes without declaring its return
+type. ctypes defaults that to a 32-bit `int`, which truncates the pseudo-handle;
+`OpenProcessToken` then rejects the value and the function quietly answered
+False.
+
+The bug was invisible because the failed check is the safe-looking one, and
+because it had a second consequence nobody had noticed: the app believed it was
+unelevated on *every* run, so it always round-tripped privileged work through the
+scheduled task even when it was already elevated. Fixed by declaring the Win32
+signatures properly, with `IsUserAnAdmin` as a fallback if the token query cannot
+be completed -- a failed query should not be reported as "not elevated".
+
+Verified both ways: False from an ordinary shell, True through the privileged
+helper, with the window showing `administrator: yes (settings can be changed)`.
+
+### The log repeated itself every few seconds
+
+`_apply_capabilities` runs on every status poll, and it logged all capability
+notes each time. Six lines, every few seconds, burying everything else -- and
+because the notes are facts about the hardware ("no fan sensors on this model")
+they never changed, so the repetition implied a problem that was not there. They
+are logged once now, and again only if the notes actually change.
+
+### Tests
+
+**446 passed**, 6 skipped. New regression tests assert `is_elevated()` agrees with
+`IsUserAnAdmin`, that the Win32 declarations are present, and that a failed token
+query falls back rather than claiming "not elevated".
+
 ## v0.5.0
 
 ### Administrator rights are baked into the executable

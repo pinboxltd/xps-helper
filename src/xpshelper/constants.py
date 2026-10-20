@@ -18,7 +18,7 @@ from pathlib import Path
 
 APP_NAME = "xps-helper"
 APP_DISPLAY_NAME = "XPS Helper"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 
 # --------------------------------------------------------------------------
 # Dell Command | Configure (cctk)

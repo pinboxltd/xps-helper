@@ -125,6 +125,10 @@ class HelperWindow:
         # Set once the thermal mode has been read for the first time. The read is
         # a multi-second WMI round trip, so it is not repeated on every poll.
         self._thermal_read_done = False
+        # Capability notes already logged. _apply_capabilities runs on every
+        # status refresh, so without this the same hardware facts were re-printed
+        # every few seconds and buried everything else in the log.
+        self._logged_capability_notes: list[str] = []
         # True once the firmware has confirmed it has no ThermalManagement
         # attribute. Keeps the "not available" explanation from being overwritten
         # by a profile description loaded out of settings.
@@ -536,8 +540,16 @@ class HelperWindow:
         elif caps.charge_modes:
             self._enable_only(self._charge_buttons, caps.charge_modes)
 
-        for note in caps.notes:
-            log.info("capability: %s", note)
+        # Log the capability notes once, not on every refresh.
+        #
+        # This method runs on every status poll, so logging here repeated the same
+        # six lines every few seconds and buried everything else. The notes are
+        # also facts about the hardware -- "no fan sensors on this model" does not
+        # change -- so repeating them implies something is wrong when it is not.
+        if caps.notes and caps.notes != self._logged_capability_notes:
+            self._logged_capability_notes = list(caps.notes)
+            for note in caps.notes:
+                log.info("capability: %s", note)
 
     def _disable_group(self, buttons) -> None:
         """Disable every ModeButton in a group."""

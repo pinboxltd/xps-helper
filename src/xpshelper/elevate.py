@@ -61,6 +61,14 @@ def is_elevated() -> bool:
     administrator account running unelevated has Administrators in its *deny*
     list, so a group check would wrongly report "elevated" and the app would
     happily attempt writes that the firmware then refuses.
+
+    Every Win32 call below declares its argument and return types. That is not
+    decoration: without them ctypes treats a handle as a 32-bit ``int``, and
+    ``GetCurrentProcess()`` is a pseudo-handle that does not survive the
+    truncation. ``OpenProcessToken`` is then handed a value it rejects, and this
+    function returned False **even when the process was genuinely elevated** --
+    which is exactly the bug that made the window report "administrator: NO"
+    while the app was running elevated.
     """
     if not elevation_supported():
         return False
@@ -68,27 +76,73 @@ def is_elevated() -> bool:
         import ctypes
         from ctypes import wintypes
 
-        advapi32 = ctypes.windll.advapi32
-        kernel32 = ctypes.windll.kernel32
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+
+        advapi32.OpenProcessToken.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.HANDLE),
+        ]
+        advapi32.OpenProcessToken.restype = wintypes.BOOL
+
+        advapi32.GetTokenInformation.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,          # TOKEN_INFORMATION_CLASS
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        advapi32.GetTokenInformation.restype = wintypes.BOOL
+
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        TOKEN_QUERY = 0x0008
+        TOKEN_ELEVATION = 20  # a DWORD that is non-zero when elevated
 
         token = wintypes.HANDLE()
-        TOKEN_QUERY = 0x0008
         if not advapi32.OpenProcessToken(
             kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)
         ):
-            return False
+            return _elevated_fallback()
+
         try:
-            # TOKEN_ELEVATION = 20: a DWORD that is non-zero when elevated.
             elevated = wintypes.DWORD()
             returned = wintypes.DWORD()
-            if not advapi32.GetTokenInformation(
-                token, 20, ctypes.byref(elevated), ctypes.sizeof(elevated), ctypes.byref(returned)
-            ):
-                return False
+            ok = advapi32.GetTokenInformation(
+                token,
+                TOKEN_ELEVATION,
+                ctypes.byref(elevated),
+                ctypes.sizeof(elevated),
+                ctypes.byref(returned),
+            )
+            if not ok:
+                return _elevated_fallback()
             return bool(elevated.value)
         finally:
             kernel32.CloseHandle(token)
     except Exception:  # noqa: BLE001 - never let a probe break the app
+        return _elevated_fallback()
+
+
+def _elevated_fallback() -> bool:
+    """Second opinion when the token query cannot be completed.
+
+    ``IsUserAnAdmin`` is less precise than TOKEN_ELEVATION -- it answers "is this
+    token an administrator" -- but it is better than claiming "not elevated" on a
+    machine where the token query failed for an unrelated reason. Getting this
+    wrong in the other direction would make the app skip its privileged path when
+    it actually needs it, so a false negative is the safer failure; this only
+    helps when the primary check is unavailable rather than merely negative.
+    """
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001
         return False
 
 
