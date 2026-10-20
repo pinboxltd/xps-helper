@@ -88,6 +88,10 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw "-m dispatch should fail without a request" }
 
           Write-Host "All executable smoke checks passed."
+          # The -m probe above deliberately leaves $LASTEXITCODE non-zero, and a
+          # PowerShell script exits with it unless it is cleared. Without this the
+          # step fails even though every check passed.
+          $global:LASTEXITCODE = 0
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
