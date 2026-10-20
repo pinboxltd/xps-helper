@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.7.0
+
+### Real package power and PL1/PL2, from a provider that has a driver
+
+A screenshot of HWMonitor on this same machine showed per-core temperatures,
+package power (2.91 W) and the firmware power limits (**PL1 = PL2 = 46 W**,
+PL4 = 129 W) -- readings this project had called unavailable.
+
+That correction matters. HWMonitor gets them by loading a **kernel driver**
+(``cpuz166``, running from ``C:\ProgramData\CPUID Software``) and executing
+**RDMSR**, the ring-0 instruction that reads Intel's RAPL energy counters
+(``MSR 0x606``), ``MSR_PKG_POWER_LIMIT`` (``MSR 0x610``) and the DTS temperature
+registers. Windows gives user mode no way to do that. Every tool that shows watts
+-- HWiNFO, LibreHardwareMonitor, ThrottleStop -- ships a driver for it.
+
+The accurate statement was never "this machine has no sensors"; it was **"user
+mode cannot read them without a driver"**. XPS Helper still does not ship one:
+a kernel driver is a far larger privilege surface than a thermal-mode switch
+needs. Instead it now reads from a monitor the user already runs:
+
+| Provider | Interface | Status |
+|---|---|---|
+| OpenHardwareMonitor | ``root\OpenHardwareMonitor`` (WMI) | **new** |
+| HWiNFO (Report to Registry) | ``HKLM\SOFTWARE\HWiNFO64\VSB`` (registry) | **new** |
+| LibreHardwareMonitor | ``root\LibreHardwareMonitor`` (WMI) | legacy: older builds published it, current 0.9.x does not -- the read is kept, but it is not advertised |
+| HWMonitor (CPUID) | none published | cannot be a source |
+
+No web server, no HTTP, no extra service: the app reads those interfaces directly.
+``xps-helper sensors`` adds package power and PL1/PL2 when a provider is running,
+and ``doctor`` reports which providers are present.
+
+### The HWiNFO reader fails closed
+
+Its registry layout is written by software we do not control and could not be
+verified on the machine this was developed on. The reader accepts both the
+``Sensor<N>``/``Value<N>``/``ValueType<N>`` and ``Label<N>`` spellings, and returns
+**nothing** when the shape is unexpected rather than guessing. A number that might
+be the wrong sensor is worse than a blank field in a tool that changes firmware
+settings.
+
+### Why this answers the thermal-mode question
+
+PL1/PL2 are exactly what a thermal mode would change if it changes a power limit.
+Watching them move (or not) settles whether the modes do anything beyond fans --
+something temperature alone could not decide.
+
+### Tests
+
+**491 passed**, 6 skipped. New tests cover both WMI providers, the registry reader
+in both spellings, the fail-closed cases, and that PL1 is not confused with PL2.
+
 ## v0.6.4
 
 ### "The thermal modes don't seem to make any real difference"

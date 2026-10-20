@@ -324,6 +324,42 @@ def run_doctor(service: XpsHelper, *, include_raw: bool = True) -> DoctorReport:
             "the EC/BIOS.",
         )
 
+    # -- power limits (needs a provider with a kernel driver) --------------
+    #
+    # Package power and PL1/PL2 live behind RDMSR, which is ring 0. This project
+    # does not ship a driver, so it reads from whichever monitor the user runs.
+    try:
+        from .vendorsensors import package_power, power_limit
+
+        vendor = service.telemetry.read_vendor_sensors()
+    except Exception:  # noqa: BLE001 - optional source
+        vendor = []
+    if vendor:
+        providers = ", ".join(sorted({s.provider for s in vendor}))
+        bits = []
+        power = package_power(vendor)
+        if power is not None:
+            bits.append(f"package {power.value:.2f} W")
+        for which in ("1", "2"):
+            limit = power_limit(vendor, which)
+            if limit is not None:
+                bits.append(f"PL{which} {limit.value:.1f} W")
+        report.add(
+            "Power and limits",
+            OK,
+            f"from {providers}: " + (" | ".join(bits) if bits else f"{len(vendor)} sensors"),
+        )
+    else:
+        report.add(
+            "Power and limits",
+            INFO,
+            "Not available. Reading package power or the PL1/PL2 limits means "
+            "executing RDMSR, which needs a kernel driver this tool does not ship. "
+            "Run LibreHardwareMonitor, OpenHardwareMonitor or HWiNFO (with "
+            "'Report to Registry') and these appear automatically. HWMonitor "
+            "publishes no interface, so it cannot be a source.",
+        )
+
     report.add("Telemetry backend", INFO, f"{getattr(service.telemetry, 'name', '?')}")
 
     # -- config -----------------------------------------------------------

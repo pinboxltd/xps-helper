@@ -1,5 +1,21 @@
 # Credits and attribution
 
+## Third-party sensor providers
+
+Package power and the PL1/PL2 power limits are read through interfaces published
+by other projects, not reverse-engineered here:
+
+- **LibreHardwareMonitor** and **OpenHardwareMonitor** -- their WMI ``Sensor``
+  class, the same shape both projects have used for years.
+- **HWiNFO** -- the "Report to Registry" layout under
+  ``HKLM\SOFTWARE\HWiNFO64\VSB``.
+
+None of these tools is bundled or required. They are read only when the user is
+already running one. XPS Helper does not ship a kernel driver, because reading
+MSRs directly would mean taking on a privilege surface much larger than this
+tool's purpose.
+
+
 ## The DPTF temperature source
 
 Unlike most of the interface knowledge above, this one was worked out on the

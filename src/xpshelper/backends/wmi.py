@@ -65,6 +65,15 @@ try {
     Select-Object Name, SensorType, Value, Identifier, Parent)
 } catch { }
 
+# OpenHardwareMonitor publishes the same Sensor shape. Both need their own app
+# running; whichever is present supplies real package temperature and power that
+# this firmware does not expose.
+$out.ohm_sensors = @()
+try {
+  $out.ohm_sensors = @(Get-CimInstance -Namespace 'root/OpenHardwareMonitor' -ClassName 'Sensor' |
+    Select-Object Name, SensorType, Value, Identifier, Parent)
+} catch { }
+
 $out.acpi_thermal = @()
 try {
   $out.acpi_thermal = @(Get-CimInstance -Namespace 'root/wmi' -ClassName 'MSAcpi_ThermalZoneTemperature' |
@@ -95,6 +104,8 @@ class RawTelemetry:
     battery_full: list[dict[str, Any]] = field(default_factory=list)
     dcim_sensors: list[dict[str, Any]] = field(default_factory=list)
     lhm_sensors: list[dict[str, Any]] = field(default_factory=list)
+    #: OpenHardwareMonitor rows, same shape as lhm_sensors.
+    ohm_sensors: list[dict[str, Any]] = field(default_factory=list)
     acpi_thermal: list[dict[str, Any]] = field(default_factory=list)
     #: Intel DPTF thermal zones from ``root\wmi :: EsifDeviceInformation``.
     esif_zones: list[dict[str, Any]] = field(default_factory=list)
@@ -147,6 +158,7 @@ def parse_telemetry_json(payload: str) -> RawTelemetry:
         battery_full=_as_list(data.get("battery_full")),
         dcim_sensors=_as_list(data.get("dcim_sensors")),
         lhm_sensors=_as_list(data.get("lhm_sensors")),
+        ohm_sensors=_as_list(data.get("ohm_sensors")),
         acpi_thermal=_as_list(data.get("acpi_thermal")),
         esif_zones=_as_list(data.get("esif_zones")),
     )
@@ -230,6 +242,19 @@ def temperatures_from_telemetry(raw: RawTelemetry) -> list[TemperatureReading]:
       3. ACPI thermal zone (coarse, but always present).
     """
     readings: list[TemperatureReading] = []
+
+    for entry in raw.ohm_sensors:
+        if str(entry.get("SensorType") or "").lower() != "temperature":
+            continue
+        value = _float(entry.get("Value"))
+        if value is None:
+            continue
+        name = str(entry.get("Name") or "Sensor")
+        if "average" in name.lower() or "max" in name.lower():
+            continue
+        readings.append(TemperatureReading(name=name, celsius=value, source="wmi:ohm"))
+    if readings:
+        return readings
 
     for entry in raw.lhm_sensors:
         if str(entry.get("SensorType") or "").lower() != "temperature":
@@ -404,6 +429,23 @@ class WmiTelemetryBackend:
 
     def read_temperatures(self) -> list[TemperatureReading]:
         return temperatures_from_telemetry(self._snapshot())
+
+    def read_vendor_sensors(self) -> list[Any]:
+        """Sensors published by LibreHardwareMonitor, OpenHardwareMonitor or HWiNFO.
+
+        These are the only route to real package power and the PL1/PL2 power
+        limits on this machine: reading those means executing RDMSR, which needs a
+        kernel driver that this project deliberately does not ship. An empty list
+        is the normal answer when none of those programs is running.
+        """
+        from ..vendorsensors import hwinfo_sensors, sensors_from_wmi_entries
+
+        raw = self._snapshot()
+        collected: list[Any] = []
+        collected.extend(sensors_from_wmi_entries(raw.lhm_sensors, "lhm"))
+        collected.extend(sensors_from_wmi_entries(raw.ohm_sensors, "ohm"))
+        collected.extend(hwinfo_sensors())
+        return collected
 
     def read_fans(self) -> list[FanReading]:
         return fans_from_telemetry(self._snapshot())

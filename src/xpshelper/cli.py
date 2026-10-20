@@ -310,6 +310,26 @@ def _cmd_sensors(args: argparse.Namespace, service: XpsHelper) -> int:
     print(f"{len(readings)} temperature sensor(s), hottest first:")
     for reading in readings:
         print(f"  {reading.name:<30} {reading.celsius:6.1f} C   ({reading.source})")
+
+    # Real power and the PL1/PL2 limits, when a provider with a driver is
+    # running. This firmware exposes neither, and RDMSR is ring 0, so a
+    # third-party monitor is the only route.
+    try:
+        from .vendorsensors import package_power, power_limit
+
+        vendor = service.telemetry.read_vendor_sensors()
+    except Exception:  # noqa: BLE001 - optional source
+        vendor = []
+    if vendor:
+        print()
+        print(f"Power ({sorted({s.provider for s in vendor})[0]}):")
+        power = package_power(vendor)
+        if power is not None:
+            print(f"  {'Package power':<30} {power.value:6.2f} W")
+        for which in ("1", "2"):
+            limit = power_limit(vendor, which)
+            if limit is not None:
+                print(f"  {f'Power limit PL{which}':<30} {limit.value:6.2f} W")
     return EXIT_OK
 
 
