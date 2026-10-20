@@ -36,6 +36,24 @@ refusing when a shell is attached, refusing when a process cannot be inspected, 
 case-insensitive name comparison, and that a source run never touches the console.
 # Changelog
 
+## v0.7.3
+
+### The published executables reported the wrong version
+
+The v0.7.1 and v0.7.2 downloads say **0.7.0** in their title bar and from
+`--version`, because the version bump never applied. The bump script replaced
+`0.7.1` with `0.7.2`; the file still said `0.7.0`, there was nothing to
+replace, and it wrote the file anyway without noticing.
+
+A release whose `--version` disagrees with its own tag is worse than a wrong
+number: it makes every bug report ambiguous about what was actually running. Both
+files now say 0.7.3, and `tests/test_version.py` fails the suite if
+`constants.APP_VERSION` and `pyproject.toml` ever disagree again.
+
+### Tests
+
+**506 passed**, 6 skipped.
+
 ## v0.7.0
 
 ### Real package power and PL1/PL2, from a provider that has a driver
