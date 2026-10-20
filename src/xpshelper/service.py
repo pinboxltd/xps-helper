@@ -455,19 +455,20 @@ class XpsHelper:
         import sys as _sys
 
         if kind == "charge":
-            cli = [
-                _sys.executable,
-                "-m",
-                "xpshelper",
-                "charge",
-                str(target.mode.value),
-            ]
+            # The child runs a dedicated internal command rather than the public
+            # "charge" one. The public command re-probes every BIOS attribute
+            # before writing -- several seconds of PowerShell -- and the child
+            # already knows exactly what to write. On a click that probe was most
+            # of the wait.
+            cli = priv.self_invocation(
+                ["internal-charge", str(target.mode.value)]
+            )
             if target.start is not None and target.stop is not None:
                 cli += ["--start", str(target.start), "--stop", str(target.stop)]
         else:  # pragma: no cover - profiles cannot use this path yet
             return False
 
-        # Do not persist twice: the child applies the same command.
+        # The child applies the same command; no need to verify twice.
         cli.append("--no-verify")
         result = priv.run_via_helper(cli)
         if not result.ok:

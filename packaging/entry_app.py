@@ -18,10 +18,6 @@ answered "shared" even for launches that did create their own console, so the
 program printed help and closed instead of opening a window. Guessing wrong is
 far worse than being predictable, so the rule is now the simple one: no arguments
 means the window, and the help is one flag away.
-
-``_owns_console`` and ``_hide_own_console`` remain, but only to tidy up: a console
-program that opens a window should not leave a black console sitting behind it.
-Getting *that* wrong is harmless.
 """
 
 from __future__ import annotations
@@ -29,34 +25,20 @@ from __future__ import annotations
 import sys
 
 
-def _owns_console() -> bool:
-    """Whether this process created its console, as opposed to sharing one.
+def _detach_console() -> None:
+    """Detach this process from its console, so the window disappears.
 
-    Used only to decide whether hiding the console is polite. ``GetConsoleProcessList``
-    reports everyone attached; a console created for this process has one member.
+    ``FreeConsole`` rather than ``ShowWindow(SW_HIDE)``: hiding the window guesses
+    at ownership, whereas detaching is exact. If this process owned the console (a
+    double-click) the console is destroyed and the black window vanishes; if a
+    shell started us, that shell keeps its window and only we let go. Either way
+    nobody is left with a stray console behind the window.
     """
     try:
         import ctypes
 
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        buffer = (ctypes.c_uint * 8)()
-        count = kernel32.GetConsoleProcessList(buffer, 8)
-        return count <= 1
+        ctypes.windll.kernel32.FreeConsole()
     except Exception:  # noqa: BLE001 - non-Windows, or no console at all
-        return False
-
-
-def _hide_own_console() -> None:
-    """Hide the console window belonging to this process."""
-    try:
-        import ctypes
-
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        user32 = ctypes.windll.user32  # type: ignore[attr-defined]
-        window = kernel32.GetConsoleWindow()
-        if window:
-            user32.ShowWindow(window, 0)  # SW_HIDE
-    except Exception:  # noqa: BLE001
         pass
 
 
@@ -81,9 +63,9 @@ def main() -> int:
 
         return cli_main(argv)
 
-    # No arguments: this is the window.
-    if _owns_console():
-        _hide_own_console()
+    # No arguments: this is the window. Detach from the console first so a
+    # double-click does not leave a black console sitting behind it.
+    _detach_console()
     from xpshelper.gui.app import main as gui_main
 
     try:

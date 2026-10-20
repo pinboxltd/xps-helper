@@ -361,6 +361,35 @@ def _cmd_update(args: argparse.Namespace, service: XpsHelper) -> int:
     return EXIT_OK
 
 
+def _cmd_internal_charge(args: argparse.Namespace, service: XpsHelper) -> int:
+    """Hidden: apply a charge setting directly. For the privileged helper child.
+
+    Deliberately skips the capability probe. The parent has already decided what
+    to write, and probing enumerates every BIOS attribute -- several seconds of
+    PowerShell that the user was paying for on every click. If the attribute
+    turns out to be missing, the write itself fails with the firmware's own error
+    and that reaches the user.
+    """
+    from .model import ChargeConfig, ChargeMode
+
+    try:
+        mode = ChargeMode.from_token(args.mode)
+    except Exception:  # noqa: BLE001
+        mode = None
+    if mode is None:
+        print(f"error: unknown charge mode {args.mode!r}", file=sys.stderr)
+        return EXIT_USAGE
+
+    config = ChargeConfig(mode=mode, start=args.start, stop=args.stop)
+    try:
+        service.control.set_charge_config(config)
+    except Exception as exc:  # noqa: BLE001 - reported to the parent
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    print(f"applied {config.describe}")
+    return EXIT_OK
+
+
 def _cmd_thermal(args: argparse.Namespace, service: XpsHelper) -> int:
     """Read or set the thermal mode over Dell's ACPI-WMI interface.
 
@@ -843,6 +872,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     internal.add_argument("mode", nargs="?")
     internal.set_defaults(func=_cmd_internal_thermal)
+
+    # Hidden: the privileged child's fast charge path. No capability probe.
+    internal_charge = subparsers.add_parser(
+        "internal-charge", add_help=False, help=argparse.SUPPRESS
+    )
+    internal_charge.add_argument("mode")
+    internal_charge.add_argument("--start", type=int, default=None)
+    internal_charge.add_argument("--stop", type=int, default=None)
+    internal_charge.add_argument("--no-verify", action="store_true")
+    internal_charge.set_defaults(func=_cmd_internal_charge)
 
     doctor = subparsers.add_parser(
         "doctor", parents=[_make_common(suppressed=True)],

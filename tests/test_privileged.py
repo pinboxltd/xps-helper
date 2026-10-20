@@ -341,7 +341,11 @@ def test_write_routing_uses_the_helper_when_available(monkeypatch):
     assert "--stop" in command and "80" in command
     # The child applies the setting, so the parent must not verify/persist again.
     assert "--no-verify" in command
-    assert command[command.index("charge") + 1] == "Custom"
+    # The child runs the lean internal command, not the public "charge" one: the
+    # public command re-probes every BIOS attribute before writing, and a probe is
+    # a multi-second firmware round trip the child does not need.
+    assert "internal-charge" in command
+    assert command[command.index("internal-charge") + 1] == "Custom"
 
 
 def test_write_routing_never_recurses_into_the_helper(monkeypatch):

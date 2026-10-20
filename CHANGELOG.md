@@ -1,5 +1,49 @@
 # Changelog
 
+## v0.6.2
+
+### The black console window is gone
+
+Launching the executable opened a second window -- the console Windows allocates
+for a console-subsystem program -- and it sat behind the app showing Python log
+lines.
+
+It is now detached with ``FreeConsole`` the moment the window is about to open.
+That is more precise than hiding the window: if this process owned the console (a
+double-click) the console is destroyed; if a shell started it, the shell keeps its
+console and only we let go. The earlier attempt used ``ShowWindow(SW_HIDE)``
+guarded by ``GetConsoleProcessList``, a heuristic that answered wrong and left the
+window up.
+
+### On click latency -- the honest answer
+
+Clicks still take several seconds, and the cause is **the firmware**, not the
+application. Measured on an XPS 13 7390, inside an already-elevated process:
+
+```
+Get-CimClass                 0.13 s
+read ONE BIOS attribute      3.28 s
+```
+
+Every charge or thermal change is at least one such round trip; Custom is three
+writes because the thresholds and the mode must land together. Nothing in the
+app can make the WMI BIOS provider answer faster.
+
+What did get cheaper:
+
+- The privileged child runs a dedicated ``internal-charge`` command instead of the
+  public ``charge`` one, so it no longer probes every BIOS attribute before
+  writing.
+- The charge attribute name is tried from a known-good candidate first. Enumerating
+  the attribute table to learn a name that is usually the first candidate is now a
+  fallback, not the default.
+
+Both are real savings on a slow provider, but neither touches the dominant cost.
+
+### Tests
+
+**471 passed**, 6 skipped.
+
 ## v0.6.1
 
 ### The charge buttons did nothing

@@ -259,7 +259,8 @@ class HelperWindow:
                         sticky="w")
             self._charge_buttons[mode] = button
 
-        thresholds = tk.Frame(outer, bg=p.form_back)
+        self._thresholds_frame = tk.Frame(outer, bg=p.form_back)
+        thresholds = self._thresholds_frame
         thresholds.pack(fill="x", pady=(2, 2))
         tk.Label(thresholds, text="Custom start %", bg=p.form_back, fg=p.fore_main,
                  font=("Segoe UI", 9)).pack(side="left")
@@ -701,15 +702,38 @@ class HelperWindow:
         self._charge_hint.set_text(mode.description if mode else "")
 
     def _update_threshold_state(self) -> None:
+        """Show the custom thresholds only when Custom is the selected mode.
+
+        They were previously disabled rather than hidden, which left two dead
+        spinboxes and their labels on screen for every other mode. The values are
+        meaningless unless Custom is in play, so they are removed from the layout
+        instead of being greyed out.
+        """
         mode = ChargeMode.from_token(self._charge_var.get())
-        state = "normal" if (mode is not None and mode.needs_thresholds) else "disabled"
+        wants_thresholds = bool(mode is not None and mode.needs_thresholds)
+
         for widget in (self._start_spin, self._stop_spin):
             try:
-                widget.configure(state=state)
+                widget.configure(state="normal" if wants_thresholds else "disabled")
             except Exception:  # noqa: BLE001
                 pass
+
+        try:
+            if wants_thresholds:
+                # Re-pack in its original position: pack_forget then pack would
+                # otherwise append it after the hint and the apply button.
+                self._thresholds_frame.pack(
+                    fill="x", pady=(2, 2), before=self._charge_hint
+                )
+                self._apply_charge_button.pack(anchor="w", pady=(6, 8), before=self._charge_hint)
+            else:
+                self._thresholds_frame.pack_forget()
+                self._apply_charge_button.pack_forget()
+        except Exception:  # noqa: BLE001 - window may be closing
+            pass
+
         self._apply_charge_button.configure(
-            state="normal" if state == "normal" else "disabled"
+            state="normal" if wants_thresholds else "disabled"
         )
 
     def _apply_status(self, status: SystemStatus) -> None:
